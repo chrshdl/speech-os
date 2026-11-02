@@ -1,0 +1,107 @@
+From e25e35cdc6e571685b5e8fc86aac5b5435bb132e Mon Sep 17 00:00:00 2001
+From: chrshdl <cwasilei@gmail.com>
+Date: Fri, 16 Oct 2026 11:21:10 +0200
+Subject: [PATCH] v3d: import resources into the display device only when asked
+ to
+
+With renderonly (kmsro), v3d_resource_from_handle() imported every
+dma-buf into the display device right away, in case a KMS handle for it
+was asked for later. Most imported buffers are only ever sampled by the
+GPU, such as the frames a Wayland-less WebKit (Cog's DRM platform) hands
+its UI process. On a Raspberry Pi 4 with more than 4GB of RAM, vc4 can
+only address the low 4GB, so the kernel bounces each import through
+swiotlb, a copy of the whole buffer, only for vc4 to reject it because
+it is not physically contiguous (or bounced). Larger buffers do not fit
+a swiotlb segment and log "vc4-drm gpu: swiotlb buffer is full".
+
+Do the import on the first resource_get_handle(WINSYS_HANDLE_TYPE_KMS)
+instead, which is the only place its result is used.
+
+Upstream: not submitted yet
+
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+ src/gallium/drivers/v3d/v3d_resource.c | 40 +++++++++++++++++++-------
+ src/gallium/drivers/v3d/v3d_resource.h |  4 +++
+ 2 files changed, 34 insertions(+), 10 deletions(-)
+
+diff --git a/src/gallium/drivers/v3d/v3d_resource.c b/src/gallium/drivers/v3d/v3d_resource.c
+index 33df0d0..10d593a 100644
+--- a/src/gallium/drivers/v3d/v3d_resource.c
++++ b/src/gallium/drivers/v3d/v3d_resource.c
+@@ -442,6 +442,31 @@ v3d_resource_modifier(struct v3d_resource *rsc)
+         }
+ }
+ 
++/* Imports a resource from resource_from_handle() into the display device the
++ * first time its KMS handle is asked for, rather than in resource_from_handle()
++ * itself: most imported buffers are only ever sampled by the GPU, and an
++ * import into the display maps the whole buffer for it, which bounces it
++ * through swiotlb where the display cannot address the memory (vc4 on BCM2711
++ * sees only the low 4GB), only for the display to reject anything that is not
++ * physically contiguous.
++ */
++static void
++v3d_resource_import_scanout(struct v3d_screen *screen,
++                            struct v3d_resource *rsc)
++{
++        if (!p_atomic_read(&rsc->scanout_import_pending))
++                return;
++
++        struct renderonly_scanout *scanout =
++                renderonly_create_gpu_import_for_resource(&rsc->base,
++                                                          screen->ro, NULL);
++        if (scanout &&
++            p_atomic_cmpxchg_ptr(&rsc->scanout, NULL, scanout) != NULL)
++                renderonly_scanout_destroy(scanout, screen->ro);
++
++        p_atomic_set(&rsc->scanout_import_pending, false);
++}
++
+ static bool
+ v3d_resource_get_handle(struct pipe_screen *pscreen,
+                         struct pipe_context *pctx,
+@@ -468,6 +493,7 @@ v3d_resource_get_handle(struct pipe_screen *pscreen,
+                 return v3d_bo_flink(bo, &whandle->handle);
+         case WINSYS_HANDLE_TYPE_KMS:
+                 if (screen->ro) {
++                        v3d_resource_import_scanout(screen, rsc);
+                         if (renderonly_get_handle(rsc->scanout, whandle)) {
+                                 whandle->stride = rsc->slices[0].stride;
+                                 return true;
+@@ -999,16 +1025,10 @@ v3d_resource_from_handle(struct pipe_screen *pscreen,
+                  }
+         }
+ 
+-        if (screen->ro) {
+-                /* Make sure that renderonly has a handle to our buffer in the
+-                 * display's fd, so that a later renderonly_get_handle()
+-                 * returns correct handles or GEM names.
+-                 */
+-                rsc->scanout =
+-                        renderonly_create_gpu_import_for_resource(prsc,
+-                                                                  screen->ro,
+-                                                                  NULL);
+-        }
++        /* Make sure that renderonly has a handle to our buffer in the display's
++         * fd once a KMS handle is asked for, see v3d_resource_import_scanout().
++         */
++        rsc->scanout_import_pending = screen->ro != NULL;
+ 
+         if (rsc->tiled && whandle->stride != slice->stride) {
+                 static bool warned = false;
+diff --git a/src/gallium/drivers/v3d/v3d_resource.h b/src/gallium/drivers/v3d/v3d_resource.h
+index d698ae7..fc4e15f 100644
+--- a/src/gallium/drivers/v3d/v3d_resource.h
++++ b/src/gallium/drivers/v3d/v3d_resource.h
+@@ -52,6 +52,10 @@ struct v3d_resource {
+         struct pipe_resource base;
+         struct v3d_bo *bo;
+         struct renderonly_scanout *scanout;
++        /* Imported, not yet imported into the display: see
++         * v3d_resource_import_scanout().
++         */
++        bool scanout_import_pending;
+         struct v3d_resource_slice slices[V3D_MAX_MIP_LEVELS];
+         uint32_t cube_map_stride;
+         uint32_t sand_col128_stride;

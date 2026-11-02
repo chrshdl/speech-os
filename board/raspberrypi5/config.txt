@@ -1,0 +1,41 @@
+enable_uart=1
+arm_64bit=1
+
+disable_splash=1
+
+kernel=u-boot.bin
+
+# CMA (the contiguous memory the panel's and the GPU's buffers come from) is
+# sized here, not with cma= in boot.cmd's bootargs as on the Pi 4: cma=
+# bypasses the device tree's CMA node, which keeps CMA in the first 1 GB, and
+# the kernel then puts it near 4 GB, where the firmware cannot read its
+# mailbox messages (allocated from CMA). Every firmware request then fails,
+# and with them the clocks of vc4 and v3d: no GPU, no kiosk.
+dtoverlay=vc4-kms-v3d-pi5,cma-256
+
+# -------------------
+# Panel selection
+# -------------------
+# Raspberry Pi Touch Display 2, a 720x1280 portrait panel, used in landscape
+# (1280x720), which the speech client is designed for. The kiosk turns the
+# picture (speech-kiosk.service: Cog's rotation=3, 90 degrees clockwise,
+# which shows it upright as the device is mounted), and these parameters
+# turn the touch to match: invert x, then swap x and y. The other
+# landscape, turned 180 degrees from this one, is invy here and rotation=1
+# there.
+# Not the overlay's own rotation= parameter: it only tells the kernel, which
+# Cog does not ask.
+#
+# The panel goes on the CAM/DISP 1 connector. For CAM/DISP 0, append ,dsi0
+# to the overlay and make the next line drm_fb0_rp1_dsi0.
+#
+# 7"
+dtoverlay=vc4-kms-dsi-ili9881-7inch,invx,swapxy
+# 5"
+#dtoverlay=vc4-kms-dsi-ili9881-5inch,invx,swapxy
+
+# On a Pi 5 the panel is not vc4's but RP1's DSI controller's, a DRM device
+# of its own, and fb0 goes to whichever registers first, which can be vc4's
+# for HDMI.
+# The splash (99-splash.rules) draws on fb0, so give it to the panel.
+dtparam=drm_fb0_rp1_dsi1

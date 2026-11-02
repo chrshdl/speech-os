@@ -1,0 +1,9 @@
+# bcm2712_defconfig has 16 KB pages, and Buildroot's toolchain links for
+# 4 KB ones: more than half of the image's programs and libraries (Python,
+# dbus, ffmpeg, systemd's tools, ...) have segments a 16 KB kernel cannot
+# map. Buildroot's own raspberrypi5_defconfig takes 4 KB pages too.
+CONFIG_ARM64_4K_PAGES=y
+# The defconfig's release suffix is -v8-16k, which uname -r and
+# /lib/modules would then show for this 4 KB kernel. -v8 is what Raspberry
+# Pi calls its own 4 KB arm64 kernel.
+CONFIG_LOCALVERSION="-v8"

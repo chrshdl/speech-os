@@ -1,0 +1,51 @@
+[Unit]
+Description=Create directory structure on Data partition
+DefaultDependencies=no
+# Wait for the partition to be mounted
+Requires=data.mount
+After=data.mount
+# Run before any service that needs these folders. systemd-networkd is in
+# the list because it reads /etc/machine-id (created below).
+Before=sshd.service wpa_supplicant@wlan0.service systemd-networkd.service
+Before=speech-backend.service speech-kiosk.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# 1. Browser state of the kiosk (WebKit's local storage and caches) and the
+#    Mesa shader cache. The rootfs is read-only, so without these the kiosk
+#    forgets the client's settings and recompiles every shader on each boot.
+ExecStart=/bin/mkdir -p /data/kiosk/data /data/kiosk/cache /data/cache/mesa
+
+# 2. Create System Directories (Targets for etc/ssh & etc/wpa_supplicant)
+ExecStart=/bin/mkdir -p /data/etc/ssh
+ExecStart=/bin/mkdir -p /data/etc/wpa_supplicant
+ExecStart=/bin/mkdir -p /data/rauc
+
+# 3. Set Permissions (Security)
+ExecStart=/bin/chmod 700 /data/etc/ssh
+ExecStart=/bin/chmod 755 /data/rauc
+
+# 4. Seed a default (header-only) wpa_supplicant config so the supplicant
+#    starts with a control interface on first boot, even before any network is
+#    configured. The speech client joins a network through that socket, as
+#    the speech user, which is in netdev; wpa_supplicant then saves the
+#    network here itself (update_config=1). Guarded so a provisioned config is
+#    never clobbered. No country= line: the radio starts in the world
+#    regulatory domain and adopts the router's advertised country (802.11d).
+ExecStart=/bin/sh -c 'CONF=/data/etc/wpa_supplicant/wpa_supplicant-wlan0.conf; [ -f "$CONF" ] || { printf "ctrl_interface=DIR=/run/wpa_supplicant GROUP=netdev\nupdate_config=1\n" > "$CONF" && chmod 600 "$CONF"; }'
+
+# 5. Initialise the machine ID. /etc/machine-id is a symlink onto /data
+#    because the rootfs is read-only, and until the target has content
+#    everything that needs a machine ID fails with ENOENT. This is not an SSH
+#    concern, so it lives here, where every image variant gets it.
+ExecStart=/bin/sh -c '[ -s /data/etc/machine-id ] || systemd-machine-id-setup --root=/data'
+
+# 6. The backend's settings, such as the brightness the user asked for
+#    (backend.py --state-dir), which it sets again when it starts.
+ExecStart=/bin/mkdir -p /data/speech/state
+ExecStart=/bin/chown speech:speech /data/speech/state
+
+[Install]
+WantedBy=sysinit.target

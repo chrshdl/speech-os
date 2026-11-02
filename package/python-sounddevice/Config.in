@@ -1,0 +1,10 @@
+config BR2_PACKAGE_PYTHON_SOUNDDEVICE
+	bool "python-sounddevice"
+	depends on BR2_PACKAGE_PYTHON3
+	depends on BR2_TOOLCHAIN_HAS_THREADS # portaudio
+	select BR2_PACKAGE_PORTAUDIO # runtime, dlopen()ed
+	select BR2_PACKAGE_PYTHON_CFFI # runtime
+	help
+	  Play and record sound with Python, using PortAudio.
+
+	  https://python-sounddevice.readthedocs.io

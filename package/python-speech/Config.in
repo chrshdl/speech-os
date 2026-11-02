@@ -1,0 +1,26 @@
+config BR2_PACKAGE_PYTHON_SPEECH
+	bool "python-speech"
+	depends on BR2_PACKAGE_PYTHON3
+	depends on BR2_PACKAGE_PYTHON_ONNXRUNTIME_ARCH_SUPPORTS
+	depends on BR2_PACKAGE_HOST_RUSTC_TARGET_ARCH_SUPPORTS # python-fastapi -> python-pydantic-core
+	depends on BR2_TOOLCHAIN_HAS_FORTRAN # python-scipy
+	select BR2_PACKAGE_PYTHON3_SSL # runtime, weather over https
+	select BR2_PACKAGE_PYTHON3_UNICODEDATA # runtime
+	select BR2_PACKAGE_PYTHON3_ZLIB # runtime, compressed LM .npz
+	select BR2_PACKAGE_PYTHON_FASTAPI # runtime
+	select BR2_PACKAGE_PYTHON_HTTPX # runtime
+	select BR2_PACKAGE_PYTHON_NUMPY # runtime
+	select BR2_PACKAGE_PYTHON_ONNXRUNTIME # runtime
+	select BR2_PACKAGE_PYTHON_PIPER_TTS # runtime, --voice
+	select BR2_PACKAGE_PYTHON_RAPIDFUZZ # runtime
+	select BR2_PACKAGE_PYTHON_SCIPY # runtime
+	select BR2_PACKAGE_PYTHON_SOUNDDEVICE # runtime
+	select BR2_PACKAGE_PYTHON_UVICORN # runtime
+	select BR2_PACKAGE_PYTHON_WEBSOCKETS # runtime, uvicorn's WebSocket support
+	help
+	  Streaming speech recognition service: backend.py from the
+	  speech repository, its HTTP API and the browser client it
+	  serves. The acoustic model, the language model and the voice
+	  are not part of the package; they live on the /data partition.
+
+	  https://github.com/chrshdl/speech

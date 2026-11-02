@@ -1,0 +1,24 @@
+[Unit]
+Description=Speech OS health monitor for RAUC
+ConditionPathExists=/usr/bin/rauc
+
+Requires=data.mount
+After=data.mount
+
+# If the backend stops (crashes) while this waits, systemd stops this unit
+# too, and the slot is not marked good.
+Requires=speech-backend.service
+After=speech-backend.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p /data/rauc
+# Wait 15 s, then verify what a kernel, driver or package regression would
+# break (ota-health-check.sh: display, GPU, touch, the backend answering,
+# the kiosk running) before RAUC mark-good. A failed check skips mark-good,
+# so the slot keeps burning boot attempts and U-Boot rolls back after three
+# reboots.
+ExecStart=/bin/sh -c '/bin/sleep 15 && /usr/local/bin/ota-health-check.sh && /usr/bin/rauc status mark-good'
+
+[Install]
+WantedBy=multi-user.target

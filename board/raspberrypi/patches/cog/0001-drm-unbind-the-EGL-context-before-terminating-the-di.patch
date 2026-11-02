@@ -1,0 +1,40 @@
+From b4f6b48160290121f98d4e7a5085421ac850b216 Mon Sep 17 00:00:00 2001
+From: chrshdl <cwasilei@gmail.com>
+Date: Fri, 16 Oct 2026 11:22:40 +0200
+Subject: [PATCH] drm: unbind the EGL context before terminating the display
+
+clear_egl() called eglTerminate() while the renderer's context was
+still current, so eglGetCurrentDisplay() kept returning the terminated
+display. libepoxy resolves eglReleaseThread() on its first call by
+asking the current display for its EGL version, which a terminated
+display no longer answers, and then aborts: every exit of the DRM
+platform, a plain SIGTERM included, dumped core with
+
+  No provider of eglReleaseThread found.  Requires one of:
+      EGL 12
+
+Release the current context first, as EGL teardown should.
+
+Upstream: not submitted yet
+
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+ platform/drm/cog-platform-drm.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/platform/drm/cog-platform-drm.c b/platform/drm/cog-platform-drm.c
+index b9f28a8..64478b3 100644
+--- a/platform/drm/cog-platform-drm.c
++++ b/platform/drm/cog-platform-drm.c
+@@ -680,8 +680,10 @@ init_gbm (void)
+ static void
+ clear_egl (void)
+ {
+-    if (egl_data.display != EGL_NO_DISPLAY)
++    if (egl_data.display != EGL_NO_DISPLAY) {
++        eglMakeCurrent (egl_data.display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+         eglTerminate (egl_data.display);
++    }
+     eglReleaseThread ();
+ }
+ 

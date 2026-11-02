@@ -1,0 +1,137 @@
+From: chrshdl <cwasilei@gmail.com>
+Date: Sun, 18 Oct 2026 10:30:00 +0200
+Subject: [PATCH] [GStreamer][WebAudio] Buffer a few milliseconds in the audio sink
+
+The sink buffered 100 ms, in segments of 10 ms, and so did the device:
+the sink's ring buffer and the device's buffer each hold the
+buffer-time, as an ALSA sink sizes the one by the other. With the
+appsrc's queue and a USB speakerphone's packets in flight, what a page
+played was heard 218-222 ms later, too late to play a keyboard on the
+screen with: a key sounded a fifth of a second after it was touched.
+
+Buffer 8 ms, in segments of 2 ms: the same speakerphone on a Raspberry
+Pi 4 now plays what renders 33-36 ms later.
+
+The streaming threads then have only that long to keep the device fed,
+the appsrc's, which converts and resamples too, the sink's ring
+buffer's, and the source's task, which renders or waits for the
+AudioWorklet's thread to. At the normal policy, with four threads
+busy on the four cores, they were held back for longer, and the device
+underran 18 times in 25 s of playing. So they run in real time while
+they stream, at the priority of WebKit's real-time threads such as the
+AudioWorklet's, and no longer underran. Each thread enters and leaves
+real time itself, from the stream-status messages that GStreamer posts
+on it, and the source's task from its enter and leave callbacks: a pad
+task's thread goes back to a pool shared with other tasks, which WTF's
+RealTimeThreads would keep real time and promote again.
+
+Upstream: not submitted yet
+
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+--- a/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.cpp
++++ b/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.cpp
+@@ -149,6 +149,22 @@ AudioDestinationGStreamer::AudioDestinationGStreamer(const CreationOptions& opti
+         this->handleMessage(message);
+     });
+ 
++    // The streaming threads, the appsrc's and the sink's ring buffer's, run in
++    // real time: the sink buffers only a few milliseconds, see
++    // webAudioSinkBufferTime, and other busy threads would hold them back for
++    // longer, so the device would play silence. Each thread says so itself as it
++    // enters and leaves streaming, so this runs on it.
++    auto bus = adoptGRef(gst_pipeline_get_bus(GST_PIPELINE_CAST(m_pipeline.get())));
++    gst_bus_set_sync_handler(bus.get(), [](GstBus*, GstMessage* message, gpointer) -> GstBusSyncReply {
++        if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_STREAM_STATUS) {
++            GstStreamStatusType type;
++            gst_message_parse_stream_status(message, &type, nullptr);
++            if (type == GST_STREAM_STATUS_TYPE_ENTER || type == GST_STREAM_STATUS_TYPE_LEAVE)
++                webkitWebAudioSetCurrentThreadRealTime(type == GST_STREAM_STATUS_TYPE_ENTER);
++        }
++        return GST_BUS_PASS;
++    }, nullptr, nullptr);
++
+     m_src = GST_ELEMENT_CAST(g_object_new(WEBKIT_TYPE_WEB_AUDIO_SRC, "rate", options.sampleRate,
+         "destination", this, "frames", AudioUtilities::renderQuantumSize, nullptr));
+ 
+--- a/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.cpp
++++ b/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.cpp
+@@ -33,6 +33,8 @@
+ #include <gst/audio/audio-info.h>
+ #include <gst/pbutils/missing-plugins.h>
+ #include <atomic>
++#include <cerrno>
++#include <sched.h>
+ #include <wtf/Condition.h>
+ #include <wtf/Lock.h>
+ #include <wtf/Scope.h>
+@@ -223,6 +225,13 @@ static void webKitWebAudioSrcConstructed(GObject* object)
+ 
+     priv->task = adoptGRef(gst_task_new(reinterpret_cast<GstTaskFunction>(webKitWebAudioSrcRenderIteration), src, nullptr));
+     gst_task_set_lock(priv->task.get(), &priv->mutex);
++    // It renders, or waits on the AudioWorklet's thread rendering, in real time.
++    gst_task_set_enter_callback(priv->task.get(), [](GstTask*, GThread*, gpointer) {
++        webkitWebAudioSetCurrentThreadRealTime(true);
++    }, nullptr, nullptr);
++    gst_task_set_leave_callback(priv->task.get(), [](GstTask*, GThread*, gpointer) {
++        webkitWebAudioSetCurrentThreadRealTime(false);
++    }, nullptr, nullptr);
+ 
+     static Atomic<uint32_t> taskId;
+     auto taskName = makeString("webaudioSrcTask"_s, taskId.exchangeAdd(1));
+@@ -524,6 +533,27 @@ GstClockTime webkitWebAudioSourceGetPushedTime(WebKitWebAudioSrc* src)
+     return gst_util_uint64_scale(src->priv->numberOfSamples, GST_SECOND, src->priv->sampleRate);
+ }
+ 
++void webkitWebAudioSetCurrentThreadRealTime(bool realTime)
++{
++#if OS(LINUX)
++    // The priority of WTF's RealTimeThreads, which the AudioWorklet's thread
++    // runs at. They are not used here: they keep a thread real time until it
++    // exits, and re-promote it, while a pad task's thread goes back to a pool.
++    static constexpr int realTimePriority = 5;
++    struct sched_param param = { };
++    int policy = SCHED_OTHER;
++    if (realTime) {
++        policy = SCHED_RR;
++        param.sched_priority = std::clamp(realTimePriority, sched_get_priority_min(SCHED_RR), sched_get_priority_max(SCHED_RR));
++    }
++    // 0 is the calling thread.
++    if (sched_setscheduler(0, policy | SCHED_RESET_ON_FORK, &param))
++        GST_WARNING("Failed to set the scheduling policy of a streaming thread to %s: %s", realTime ? "real time" : "normal", g_strerror(errno));
++#else
++    UNUSED_PARAM(realTime);
++#endif
++}
++
+ void webkitWebAudioSourceSetDispatchToRenderThreadFunction(WebKitWebAudioSrc* src, Function<void(Function<void()>&&)>&& function)
+ {
+     Locker locker { src->priv->dispatchToRenderThreadLock };
+--- a/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.h
++++ b/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.h
+@@ -31,9 +31,11 @@ typedef struct _WebKitWebAudioSrc WebKitWebAudioSrc;
+ 
+ // How much audio the destination's sink buffers, and the segment it writes to
+ // the device at a time, its latency-time. The source fills them with silence on
+-// starting.
+-static constexpr GstClockTime webAudioSinkBufferTime = 100 * GST_MSECOND;
+-static constexpr GstClockTime webAudioSinkLatencyTime = 10 * GST_MSECOND;
++// starting. The sink's ring buffer and the device's buffer each hold the
++// buffer-time, so what plays is heard about twice as late, and more for the
++// device's own queue, such as a USB device's packets in flight.
++static constexpr GstClockTime webAudioSinkBufferTime = 8 * GST_MSECOND;
++static constexpr GstClockTime webAudioSinkLatencyTime = 2 * GST_MSECOND;
+ 
+ GType webkit_web_audio_src_get_type();
+ 
+@@ -41,5 +43,10 @@ void webkitWebAudioSourceSetBus(WebKitWebAudioSrc*, RefPtr<WebCore::AudioBus>);
+ // The stream time of the audio pushed since starting, prefilled silence included.
+ GstClockTime webkitWebAudioSourceGetPushedTime(WebKitWebAudioSrc*);
+ void webkitWebAudioSourceSetDispatchToRenderThreadFunction(WebKitWebAudioSrc*, Function<void(Function<void()>&&)>&&);
++// Runs the calling thread, one of the pipeline's streaming threads, in real
++// time while it streams, at the priority of WebKit's real-time threads such as
++// the AudioWorklet's, and on the normal policy again when it stops: a pad task's
++// thread goes back to a pool that other tasks share.
++void webkitWebAudioSetCurrentThreadRealTime(bool);
+ 
+ #endif // USE(GSTREAMER)

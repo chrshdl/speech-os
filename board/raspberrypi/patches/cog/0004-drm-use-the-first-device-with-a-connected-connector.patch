@@ -1,0 +1,69 @@
+From: chrshdl <cwasilei@gmail.com>
+Date: Mon, 2 Nov 2026 12:00:00 +0100
+Subject: [PATCH] drm: use the first device with a connected connector
+
+init_drm() took the first DRM device with KMS resources and then gave
+up when none of its connectors was connected. A board can have more
+than one such device, and the one driving the display need not come
+first: on a Raspberry Pi 5, vc4 drives the HDMI ports and a separate
+device, drm-rp1-dsi, the DSI panel, so with nothing on HDMI Cog failed
+to start whenever vc4 was enumerated first.
+
+Skip a device none of whose connectors is connected, and take the
+first one that has one.
+
+Upstream: not submitted yet
+
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+ platform/drm/cog-platform-drm.c | 28 ++++++++++++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/platform/drm/cog-platform-drm.c b/platform/drm/cog-platform-drm.c
+--- a/platform/drm/cog-platform-drm.c
++++ b/platform/drm/cog-platform-drm.c
+@@ -366,6 +366,19 @@
+ }
+ 
+ static gboolean
++has_connected_connector(int fd, const drmModeRes *resources)
++{
++    for (int i = 0; i < resources->count_connectors; ++i) {
++        drmModeConnector *connector = drmModeGetConnector(fd, resources->connectors[i]);
++        gboolean connected = connector && connector->connection == DRM_MODE_CONNECTED;
++        g_clear_pointer(&connector, drmModeFreeConnector);
++        if (connected)
++            return TRUE;
++    }
++    return FALSE;
++}
++
++static gboolean
+ init_drm(void)
+ {
+     drmDevice *devices[64];
+@@ -397,11 +410,22 @@
+         if (drm_data.fd < 0)
+             continue;
+ 
++        /*
++         * A device with KMS resources can have nothing connected to it, such
++         * as a SoC's HDMI controller next to the separate DSI controller that
++         * drives the panel, so take the first device with a connected
++         * connector rather than the first with KMS resources.
++         */
+         drm_data.base_resources = drmModeGetResources (drm_data.fd);
+         if (drm_data.base_resources) {
+-            g_debug ("init_drm: using device %p, DRM_NODE_PRIMARY %s",
++            if (has_connected_connector (drm_data.fd, drm_data.base_resources)) {
++                g_debug ("init_drm: using device %p, DRM_NODE_PRIMARY %s",
++                         device, device->nodes[DRM_NODE_PRIMARY]);
++                break;
++            }
++            g_debug ("init_drm: skipping device %p, DRM_NODE_PRIMARY %s: nothing connected",
+                      device, device->nodes[DRM_NODE_PRIMARY]);
+-            break;
++            g_clear_pointer (&drm_data.base_resources, drmModeFreeResources);
+         }
+ 
+         close (drm_data.fd);

@@ -1,0 +1,12 @@
+config BR2_PACKAGE_PYTHON_RAPIDFUZZ
+	bool "python-rapidfuzz"
+	depends on BR2_PACKAGE_PYTHON3
+	help
+	  Rapid fuzzy string matching.
+
+	  Installed as its pure Python implementation, which rapidfuzz
+	  falls back to by itself when the C++ extension is absent.
+	  Building the extension needs scikit-build-core, which
+	  Buildroot does not package.
+
+	  https://github.com/rapidfuzz/RapidFuzz

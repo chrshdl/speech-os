@@ -1,0 +1,36 @@
+From: chrshdl <cwasilei@gmail.com>
+Subject: [PATCH] Find PortAudio without find_library()
+
+On Linux, ctypes.util.find_library() looks a library up in ldconfig's
+cache, or with a C compiler or a linker. A Buildroot target has none of
+them, so it returns None and importing sounddevice fails with
+"PortAudio library not found", although libportaudio.so.2 is installed.
+
+Fall back to opening the library by its soname, which the dynamic loader
+finds on the default search path. Elsewhere nothing changes: where that
+fails, the OSError leads to the bundled library on macOS and Windows as
+before, and is raised on other systems.
+
+Upstream: not submitted
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+ src/sounddevice.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/sounddevice.py b/src/sounddevice.py
+--- a/src/sounddevice.py
++++ b/src/sounddevice.py
+@@ -70,7 +70,10 @@
+         if _libname is not None:
+             break
+     else:
+-        raise OSError('PortAudio library not found')
++        # find_library() needs ldconfig's cache, a C compiler or a
++        # linker, which an embedded system may not have. Leave the
++        # search to the dynamic loader instead, by the library's soname.
++        _libname = 'libportaudio.so.2'
+     _lib: ... = _ffi.dlopen(_libname)
+ except OSError:
+     if _platform.system() == 'Darwin':
+-- 
+2.51.0

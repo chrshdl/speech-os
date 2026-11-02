@@ -1,0 +1,12 @@
+# Compress kernel modules with gzip (zlib licence) instead of the upstream
+# defconfig's xz, which drags GPL-3.0+ xz-utils onto the target via
+# BR2_PACKAGE_XZ. Only the compressor changes, not whether modules are
+# compressed at all - gzip still shrinks .ko files substantially.
+#
+# This MUST stay in step with BR2_PACKAGE_HOST_KMOD_GZ=y in the defconfig:
+# host depmod reads the built .ko files to generate modules.dep/modules.alias,
+# and without the matching decompressor it fails SILENTLY and emits empty
+# tables - udev then autoloads nothing, which means no DSI panel, no touch and
+# no USB microphone. The post-build script asserts the tables are populated.
+# CONFIG_MODULE_COMPRESS_XZ is not set
+CONFIG_MODULE_COMPRESS_GZIP=y

@@ -1,0 +1,142 @@
+From: chrshdl <cwasilei@gmail.com>
+Date: Sat, 17 Oct 2026 19:30:00 +0200
+Subject: [PATCH] drm: dispatch each touch point changed in a frame
+
+On each libinput touch frame, the DRM platform dispatched one touch
+event, of the type and id of the last point that changed in the frame.
+WebKit takes the point of a touch event's id as the one that changed
+and the others as stationary (stateForTouchPoint in WebEventFactory),
+and the platform cleared the lifted points after dispatching. So when
+two fingers lifted in the same frame, as they often do, the first never
+lifted for WebKit: on the Touch Display 2's Goodix controller, about
+one chord in three left a finger down, a page's key sounded on, and
+WebKit made no more clicks, as for a tap with another finger down,
+until that slot was touched again. The kernel's events (evtest) had
+every finger lifting.
+
+Dispatch an event for each point changed in the frame: the pressed and
+moved ones first, then each lifted one, which is cleared once
+dispatched, so the events after it no longer have it.
+
+A point pressed in the frame is left out of the events before its own.
+WebKit starts a gesture only on a touch start whose points are all
+pressed (freshTouchEvents in EventHandler::handleTouchEvent), and with
+no finger down before, it drops the presses of any other. So when
+fingers landed in the same frame, as for a chord, each event had the
+others as stationary and none was pressed: the keys neither lit nor
+sounded.
+
+Upstream: not submitted yet
+
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+ platform/drm/cog-platform-drm.c | 73 ++++++++++++++++++++++++---------
+ 1 file changed, 53 insertions(+), 20 deletions(-)
+
+diff --git a/platform/drm/cog-platform-drm.c b/platform/drm/cog-platform-drm.c
+--- a/platform/drm/cog-platform-drm.c
++++ b/platform/drm/cog-platform-drm.c
+@@ -204,16 +204,15 @@ static struct {
+     struct keyboard_event repeating_key;
+ 
+     struct wpe_input_touch_event_raw touch_points[10];
+-    enum wpe_input_touch_event_type last_touch_type;
+-    int last_touch_id;
++    /* The touch points changed in the frame libinput reports, one bit each. */
++    uint32_t changed_touch_points;
+ } input_data = {
+     .udev = NULL,
+     .libinput = NULL,
+     .input_width = 0,
+     .input_height = 0,
+     .repeating_key = {0, 0},
+-    .last_touch_type = wpe_input_touch_event_type_null,
+-    .last_touch_id = 0,
++    .changed_touch_points = 0,
+ };
+ 
+ static struct {
+@@ -813,24 +812,59 @@ input_handle_touch_event (enum libinput_event_type touch_type, struct libinput_e
+             event_type = wpe_input_touch_event_type_motion;
+             break;
+         case LIBINPUT_EVENT_TOUCH_FRAME: {
+-            struct wpe_input_touch_event event = {
+-                .touchpoints = input_data.touch_points,
+-                .touchpoints_length = G_N_ELEMENTS (input_data.touch_points),
+-                .type = input_data.last_touch_type,
+-                .id = input_data.last_touch_id,
+-                .time = time,
+-            };
+-
+-            wpe_view_backend_dispatch_touch_event (wpe_view_data.backend, &event);
+-
++            /*
++             * WebKit takes one point of a touch event as changed, the one of
++             * its id, and the others as stationary. So dispatch an event for
++             * each point changed in the frame, such as two fingers lifting
++             * together, of which only the last was dispatched, and the other
++             * never lifted. Points pressed and moved first, then each lifted,
++             * which leaves the points of the next events once dispatched.
++             *
++             * A point pressed in the frame is left out of the events before
++             * its own. WebKit starts a gesture only on a touch event whose
++             * points are all pressed, and with no finger down before, drops
++             * the presses of any other: of fingers landing together, as for
++             * a chord, none was pressed.
++             */
++            uint32_t pressing = 0;
+             for (int i = 0; i < G_N_ELEMENTS (input_data.touch_points); ++i) {
+                 struct wpe_input_touch_event_raw *touch_point = &input_data.touch_points[i];
+-                if (touch_point->type != wpe_input_touch_event_type_up)
+-                    continue;
++                if ((input_data.changed_touch_points & (1u << i))
++                    && touch_point->type == wpe_input_touch_event_type_down) {
++                    pressing |= 1u << i;
++                    touch_point->type = wpe_input_touch_event_type_null;
++                }
++            }
+ 
+-                memset (touch_point, 0, sizeof (struct wpe_input_touch_event_raw));
+-                touch_point->type = wpe_input_touch_event_type_null;
++            for (int lifted = 0; lifted <= 1; ++lifted) {
++                for (int i = 0; i < G_N_ELEMENTS (input_data.touch_points); ++i) {
++                    struct wpe_input_touch_event_raw *touch_point = &input_data.touch_points[i];
++                    if (!(input_data.changed_touch_points & (1u << i)))
++                        continue;
++                    if (pressing & (1u << i)) {
++                        pressing &= ~(1u << i);
++                        touch_point->type = wpe_input_touch_event_type_down;
++                    }
++                    if ((touch_point->type == wpe_input_touch_event_type_up) != lifted)
++                        continue;
++
++                    struct wpe_input_touch_event event = {
++                        .touchpoints = input_data.touch_points,
++                        .touchpoints_length = G_N_ELEMENTS (input_data.touch_points),
++                        .type = touch_point->type,
++                        .id = touch_point->id,
++                        .time = time,
++                    };
++
++                    wpe_view_backend_dispatch_touch_event (wpe_view_data.backend, &event);
++
++                    if (lifted) {
++                        memset (touch_point, 0, sizeof (struct wpe_input_touch_event_raw));
++                        touch_point->type = wpe_input_touch_event_type_null;
++                    }
++                }
+             }
++            input_data.changed_touch_points = 0;
+ 
+             return;
+         }
+@@ -843,8 +877,7 @@ input_handle_touch_event (enum libinput_event_type touch_type, struct libinput_e
+     if (id < 0 || id >= G_N_ELEMENTS (input_data.touch_points))
+         return;
+ 
+-    input_data.last_touch_type = event_type;
+-    input_data.last_touch_id = id;
++    input_data.changed_touch_points |= 1u << id;
+ 
+     struct wpe_input_touch_event_raw *touch_point = &input_data.touch_points[id];
+     touch_point->type = event_type;

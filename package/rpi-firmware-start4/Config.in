@@ -1,0 +1,11 @@
+config BR2_PACKAGE_RPI_FIRMWARE_START4
+	bool "rpi-firmware-start4"
+	depends on BR2_PACKAGE_RPI_FIRMWARE_VARIANT_PI4
+	help
+	  A newer Raspberry Pi 4 GPU firmware (start4.elf, fixup4.dat)
+	  than Buildroot's rpi-firmware, which the boot partition
+	  takes instead of its copies (genimage.cfg).
+	  Buildroot's cannot start the VL805 USB controller of a Pi 4
+	  with a May 2026 bootloader EEPROM.
+
+	  https://github.com/raspberrypi/firmware

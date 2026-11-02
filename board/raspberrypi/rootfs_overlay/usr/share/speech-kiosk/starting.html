@@ -1,0 +1,43 @@
+<!doctype html>
+<!--
+  The kiosk's first page (speech-kiosk.service): the splash, as
+  splashscreen.service draws it on fb0, until the backend answers, which it
+  does only once its models are loaded. Then the client replaces it. Cog
+  starts on this page at once, so WebKit starts while the backend loads,
+  and the panel shows the unicorn throughout, never a black view between
+  the splash and the client.
+-->
+<html lang="en">
+<meta charset="utf-8">
+<title>Speech</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  /* splash.png is turned 90 degrees clockwise for the portrait fb0; Cog
+     turns this page the same way (rotation=3), so turn it back: centered,
+     it then covers exactly the pixels fbv drew it on. */
+  img {
+    position: absolute; left: 50%; top: 50%; width: 320px; height: 320px;
+    transform: translate(-50%, -50%) rotate(-90deg);
+  }
+</style>
+<img src="splash.png" alt="">
+<script>
+  const CLIENT = "http://127.0.0.1:8080/";
+
+  // An opaque (no-cors) answer is enough: the backend listens only once it
+  // is ready, and until then the connection is refused.
+  async function waitForBackend() {
+    for (;;) {
+      try {
+        await fetch(CLIENT + "v1/info", { mode: "no-cors", cache: "no-store" });
+        location.replace(CLIENT);
+        return;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+  }
+
+  waitForBackend();
+</script>
+</html>

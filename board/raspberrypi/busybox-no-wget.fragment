@@ -1,0 +1,11 @@
+# Release-only: drop BusyBox's wget applet from shipped images.
+#
+# Nothing on the device uses it - the weather intent fetches over httpx and
+# no script in this tree calls wget. It is removed to deny a sealed appliance
+# a generic download primitive, which is a standard post-exploitation
+# convenience.
+#
+# Merged only via configs/release.fragment, so dev images keep wget for bench
+# work - the same dev/release split used for SSH, the gettys and the serial
+# console.
+# CONFIG_WGET is not set

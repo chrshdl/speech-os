@@ -1,0 +1,5 @@
+# systemd's udev rules give /dev/rtc* and /dev/ptp* to the group "clock",
+# which Buildroot 2026.08 does not create (udev: "Unknown group 'clock'").
+# Backport of Buildroot master's cf669d53 (package/systemd: add clock group
+# for PTP and RTC devices); drop this file once the pinned Buildroot has it.
+- - clock -1 * - - - PTP and RTC device group

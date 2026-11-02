@@ -1,0 +1,173 @@
+name: CI speech-os
+
+on:
+  push:
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # The image build (~3-4h with WPE WebKit) is expensive, so it does NOT run
+    # on pull requests by default. Add the "build" label to a PR to opt into an
+    # image build for it. Tags (v*) and workflow_dispatch always build.
+    if: >-
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'build')
+    # WebKit alone takes hours on a hosted runner; stay within the 6h cap.
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        # Releases are for the Pi 5. configs/raspberrypi4-64_defconfig
+        # still builds locally; add raspberrypi4-64 here to release it too.
+        board: [raspberrypi5]
+    steps:
+      - name: Free disk space
+        uses: endersonmenezes/free-disk-space@7901478139cff6e9d44df5972fd8ab8fcade4db1 # v3.2.2
+        with:
+          remove_android: true
+          remove_tool_cache: true
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git python3 unzip rsync bc libncurses5-dev \
+            bison flex cpio wget libssl-dev libgnutls28-dev
+
+      - name: Checkout this repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The models are not in git: models/sources pins each by URL and
+      # sha256, the acoustic model, the LM and the wake word as assets of
+      # this repository's models-* release, see models/README.md.
+      - name: Fetch models
+        run: |
+          while read -r sha url path; do
+            case "$sha" in ''|'#'*) continue ;; esac
+            f="models/${path:-$(basename "$url")}"
+            mkdir -p "$(dirname "$f")"
+            curl -fsSL --retry 3 -o "$f" "$url"
+            echo "$sha  $f" | sha256sum -c -
+          done < models/sources
+
+      # Single source of truth for the Buildroot pin; bumped by the
+      # triage-buildroot workflow (or by hand) via a one-line PR.
+      - name: Read pinned Buildroot version
+        id: buildroot
+        run: echo "version=$(cat BUILDROOT_VERSION)" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Buildroot ${{ steps.buildroot.outputs.version }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: "buildroot/buildroot"
+          ref: "${{ steps.buildroot.outputs.version }}"
+          path: buildroot
+
+      - name: Build for ${{ matrix.board }}
+        env:
+          BR2_DL_DIR: ${{ github.workspace }}/dl
+          # OS release version for /etc/os-release (read by post-build.sh);
+          # only meaningful on tag builds, empty otherwise.
+          SPEECH_OS_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: |
+          make -C buildroot BR2_EXTERNAL=../ O=../output ${{ matrix.board }}_defconfig
+
+          # Release variant (v* tags only): merge the hardening fragment
+          # (last assignment wins) and verify it took effect BEFORE burning
+          # a multi-hour build. Dev builds keep the defconfig as-is (SSH +
+          # root/root login). NOTE: these guards must stay as explicit
+          # `if grep; then exit 1; fi` — under `set -e` a `! grep`-style
+          # pipeline never trips errexit, making the check decorative.
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            cat configs/release.fragment >> output/.config
+            make -C buildroot O=../output olddefconfig
+            grep -q '^# BR2_PACKAGE_OPENSSH is not set$' output/.config
+            if grep -q '^BR2_PACKAGE_OPENSSH=y' output/.config; then
+              echo "release fragment did not remove OpenSSH" >&2; exit 1
+            fi
+            if grep -q '^BR2_TARGET_ENABLE_ROOT_LOGIN=y' output/.config; then
+              echo "release fragment did not disable root login" >&2; exit 1
+            fi
+            if grep -q '^BR2_TARGET_GENERIC_ROOT_PASSWD=' output/.config; then
+              echo "root password still set in release config" >&2; exit 1
+            fi
+          fi
+
+          make -C buildroot O=../output
+
+      # Belt-and-braces on top of the config guards above: inspect the actual
+      # rootfs.ext4 (what genimage stamps into both A/B slots) for sshd and an
+      # unlocked root account. Runs before any rename/upload step, so a failed
+      # assertion means nothing reaches the release.
+      - name: Assert release hardening (no sshd, root locked, no serial/U-Boot access)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: ./scripts/assert-release-image.sh output/.config output/images/rootfs.ext4 output/images
+
+      - name: Name image
+        run: |
+          REF="${GITHUB_REF_NAME//\//-}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            IMG="factory-${REF}-${{ matrix.board }}.img"
+          else
+            IMG="dev-${REF}-${{ matrix.board }}.img"
+          fi
+          mv "output/images/sdcard.img" "output/images/${IMG}"
+          echo "IMG=${IMG}" >> "$GITHUB_ENV"
+
+      # Tag builds only: the sdcard.img is mostly sparse free space (FAT +
+      # ext4 headroom), so it gzips down substantially. Compresses in place
+      # (no -k — the runner is already disk-constrained). Raspberry Pi Imager
+      # and balenaEtcher both flash .img.gz directly.
+      - name: Compress factory image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          cd output/images
+          gzip -9 "${IMG}"
+          IMG="${IMG}.gz"
+          sha256sum "${IMG}" > "${IMG}.sha256"
+          echo "IMG=${IMG}" >> "$GITHUB_ENV"
+
+      - name: Upload dev image as workflow artifact
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.IMG }}
+          path: output/images/${{ env.IMG }}
+          retention-days: 14
+          compression-level: 9
+
+      # The published images aggregate GPL/LGPL components (kernel, U-Boot,
+      # BusyBox, glibc, WebKit, ...) whose licenses require making the
+      # corresponding sources available alongside the binaries. Buildroot's
+      # legal-info collects the per-package license texts, the manifest, and
+      # the source archives; every release ships that bundle next to the
+      # image. Host tools never leave the build machine, so host-* stays out.
+      - name: Collect legal info (license manifest + sources)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          BR2_DL_DIR: ${{ github.workspace }}/dl
+        run: |
+          make -C buildroot O=../output legal-info
+          tar -C output/legal-info -czf \
+            output/images/legal-info-${{ github.ref_name }}-${{ matrix.board }}.tar.gz \
+            README buildroot.config manifest.csv licenses sources
+
+      - name: Upload Factory Image to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: |
+            output/images/${{ env.IMG }}
+            output/images/${{ env.IMG }}.sha256
+
+      - name: Upload Legal Info to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
+        with:
+          files: output/images/legal-info-${{ github.ref_name }}-${{ matrix.board }}.tar.gz

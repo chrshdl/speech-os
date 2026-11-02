@@ -1,0 +1,20 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+.vscode/
+.idea/
+
+# RAUC signing material (generated externally, never commit)
+keys/
+
+# Buildroot checkout, build output and download cache (see README.md)
+/buildroot/
+/output*/
+/dl/
+
+# The models baked into /data, see models/README.md
+/models/*
+!/models/README.md
+!/models/sources
+!/models/backend-args

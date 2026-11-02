@@ -1,0 +1,24 @@
+[Match]
+Name=wlan0
+
+[Network]
+# IPv4 only, deliberately. The kernel builds IPv6 as a module
+# (CONFIG_IPV6=m), so if it is not loaded, every IPv6 step here — router
+# advertisements, DHCPv6 (which plain "DHCP=yes" also requests), and the
+# default IPv6 link-local address — fails. networkd treats that as a
+# failure of the whole link (SETUP=failed) and then never runs DHCPv4
+# either, leaving an associated radio with no address at all.
+DHCP=ipv4
+IPv6AcceptRA=no
+LinkLocalAddressing=no
+# Make resolved answer mDNS for <hostname>.local on this link (speech.local).
+# resolved is built with mDNS on globally, but networkd defaults every
+# managed link to MDNS=no and resolved clamps to MIN(link, global).
+MulticastDNS=yes
+
+[DHCPv4]
+# Identify by MAC rather than by the default DUID, which is derived from
+# /etc/machine-id. That symlink points onto /data (the rootfs is read only);
+# a MAC-based client id keeps DHCP independent of it and gives the router a
+# stable identity for this device across reflashes.
+ClientIdentifier=mac

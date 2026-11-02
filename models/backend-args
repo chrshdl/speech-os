@@ -1,0 +1,9 @@
+# The decoding settings for the models in this directory, appended to
+# SPEECH_ARGS, see README.md. tune_lm.py found them best on SLURP's
+# close-talk devel set for the stride 3 model after epoch 4
+# (stride3-epoch4-int8.onnx) with lm-mix-clean.npz, SLURP's training
+# sentences and the intents' phrases interpolated 0.93 / 0.07 with The
+# People's Speech's clean subset: WER 0.610 there, in a flat valley from
+# 0.4 / 3 to 0.6 / 5, as for the model after epoch 2. On SLURP's test sets,
+# WER 0.594 close-talk and 0.811 far-field.
+--lm-weight 0.5 --word-bonus 4 --unk-penalty 0

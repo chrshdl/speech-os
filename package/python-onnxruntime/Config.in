@@ -1,0 +1,28 @@
+config BR2_PACKAGE_PYTHON_ONNXRUNTIME_ARCH_SUPPORTS
+	bool
+	default y if BR2_aarch64 && BR2_TOOLCHAIN_USES_GLIBC
+
+config BR2_PACKAGE_PYTHON_ONNXRUNTIME
+	bool "python-onnxruntime"
+	depends on BR2_PACKAGE_PYTHON3
+	depends on BR2_PACKAGE_PYTHON_ONNXRUNTIME_ARCH_SUPPORTS
+	depends on BR2_INSTALL_LIBSTDCPP
+	depends on BR2_PACKAGE_PYTHON_NUMPY_ARCH_SUPPORTS
+	depends on BR2_TOOLCHAIN_GCC_AT_LEAST_9 # python-numpy
+	depends on BR2_HOST_GCC_AT_LEAST_9 # host-python-numpy
+	select BR2_PACKAGE_PYTHON_NUMPY # runtime
+	help
+	  ONNX Runtime, a cross-platform inference engine for ONNX
+	  models, with its Python API.
+
+	  Installed from the official manylinux wheel for aarch64:
+	  building ONNX Runtime from source fetches dozens of pinned
+	  third-party projects at configure time, which a Buildroot
+	  build cannot do.
+
+	  https://onnxruntime.ai
+
+comment "python-onnxruntime needs an aarch64 glibc toolchain w/ C++"
+	depends on BR2_PACKAGE_PYTHON3
+	depends on !BR2_PACKAGE_PYTHON_ONNXRUNTIME_ARCH_SUPPORTS || \
+		!BR2_INSTALL_LIBSTDCPP

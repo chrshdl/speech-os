@@ -1,0 +1,70 @@
+From 8d0f5e7aff19dfdddbd909da16ecb890008e2516 Mon Sep 17 00:00:00 2001
+From: chrshdl <cwasilei@gmail.com>
+Date: Fri, 23 Oct 2026 11:01:34 +0200
+Subject: [PATCH] launcher: add an option to set the autoplay policy
+
+WebKit gives every page the autoplay policy of WebKitWebsitePolicies,
+whose default, allow-without-sound, also holds back Web Audio: a page's
+AudioContext stays suspended, and resume() pending, until the user taps.
+A kiosk that speaks on its own, such as one woken by a wake word, then
+plays nothing after it starts until someone touches the screen.
+
+Add --autoplay-policy=allow|allow-without-sound|deny, which sets the
+policy of the launcher's web view. The default stays allow-without-sound.
+
+Upstream: not submitted yet
+
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+ launcher/cog-launcher.c | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/launcher/cog-launcher.c b/launcher/cog-launcher.c
+index e431b55..29ef8b8 100644
+--- a/launcher/cog-launcher.c
++++ b/launcher/cog-launcher.c
+@@ -52,6 +52,7 @@ static struct {
+         enum webprocess_fail_action action_id;
+     } on_failure;
+     char    *web_extensions_dir;
++    char    *autoplay_policy;
+     gboolean ignore_tls_errors;
+ #if !COG_USE_WPE2
+     gboolean enable_sandbox;
+@@ -298,13 +299,23 @@ cog_launcher_create_view(CogLauncher *self, CogShell *shell)
+     if (!view_backend)
+         g_error("Could not instantiate any WPE backend.");
+ 
++    WebKitAutoplayPolicy autoplay_policy = WEBKIT_AUTOPLAY_ALLOW_WITHOUT_SOUND;
++    if (!g_strcmp0(s_options.autoplay_policy, "allow"))
++        autoplay_policy = WEBKIT_AUTOPLAY_ALLOW;
++    else if (!g_strcmp0(s_options.autoplay_policy, "deny"))
++        autoplay_policy = WEBKIT_AUTOPLAY_DENY;
++    else if (s_options.autoplay_policy && g_strcmp0(s_options.autoplay_policy, "allow-without-sound"))
++        g_error("Invalid autoplay policy '%s', use allow, allow-without-sound or deny.", s_options.autoplay_policy);
++    g_autoptr(WebKitWebsitePolicies) website_policies =
++        webkit_website_policies_new_with_policies("autoplay", autoplay_policy, NULL);
++
+     g_autoptr(WebKitWebView) web_view =
+         g_object_new(WEBKIT_TYPE_WEB_VIEW, "settings", cog_shell_get_web_settings(shell), "web-context", web_context,
+ #if COG_USE_WPE2
+                      "network-session", self->network_session,
+ #endif
+                      "zoom-level", s_options.scale_factor, "backend", view_backend, "is-controlled-by-automation",
+-                     cog_shell_is_automated(shell), NULL);
++                     cog_shell_is_automated(shell), "website-policies", website_policies, NULL);
+ 
+     if (s_options.filter) {
+         WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(web_view);
+@@ -1202,6 +1213,8 @@ static GOptionEntry s_cli_options[] = {
+      "Comma separated list of platform parameters.", "PARAMS"},
+     {"web-extensions-dir", '\0', 0, G_OPTION_ARG_STRING, &s_options.web_extensions_dir,
+      "Load Web Extensions from given directory.", "PATH"},
++    {"autoplay-policy", '\0', 0, G_OPTION_ARG_STRING, &s_options.autoplay_policy,
++     "When media may play by itself: allow, allow-without-sound (default) or deny.", "POLICY"},
+     {"ignore-tls-errors", '\0', 0, G_OPTION_ARG_NONE, &s_options.ignore_tls_errors,
+      "Ignore TLS errors (default: disabled).", NULL},
+     {"content-filter", 'F', 0, G_OPTION_ARG_FILENAME, &s_options.filter_path,
+-- 
+2.34.1
+

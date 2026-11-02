@@ -1,0 +1,15 @@
+[Unit]
+Description=Read the speech models into the page cache
+# speech-backend.service spends its first seconds importing Python, and only
+# then reads the acoustic model and the LM, ~150 MB from the SD card. This
+# reads every file in its SPEECH_ARGS meanwhile, so it finds them in the page
+# cache. Started by the backend's Wants=, deliberately not ordered before it.
+Requires=data.mount
+After=data.mount
+
+[Service]
+Type=oneshot
+EnvironmentFile=/data/etc/speech-backend
+# In the order backend.py loads them; anything not a file (an option, a
+# number, a directory) is skipped. "$$" is a literal "$" for the shell.
+ExecStart=/bin/sh -c 'for f in $$SPEECH_ARGS; do if [ -f "$$f" ]; then cat "$$f" > /dev/null; fi; done'

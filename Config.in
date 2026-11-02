@@ -1,0 +1,6 @@
+source "$BR2_EXTERNAL_SPEECH_OS_PATH/package/python-speech/Config.in"
+source "$BR2_EXTERNAL_SPEECH_OS_PATH/package/python-onnxruntime/Config.in"
+source "$BR2_EXTERNAL_SPEECH_OS_PATH/package/python-piper-tts/Config.in"
+source "$BR2_EXTERNAL_SPEECH_OS_PATH/package/python-rapidfuzz/Config.in"
+source "$BR2_EXTERNAL_SPEECH_OS_PATH/package/python-sounddevice/Config.in"
+source "$BR2_EXTERNAL_SPEECH_OS_PATH/package/rpi-firmware-start4/Config.in"

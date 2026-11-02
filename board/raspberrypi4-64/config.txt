@@ -1,0 +1,26 @@
+enable_uart=1
+arm_64bit=1
+
+disable_splash=1
+
+kernel=u-boot.bin
+
+dtoverlay=vc4-kms-v3d
+
+# -------------------
+# Panel selection
+# -------------------
+# Raspberry Pi Touch Display 2, a 720x1280 portrait panel, used in landscape
+# (1280x720), which the speech client is designed for. The kiosk turns the
+# picture (speech-kiosk.service: Cog's rotation=3, 90 degrees clockwise,
+# which shows it upright as the device is mounted), and these parameters
+# turn the touch to match: invert x, then swap x and y. The other
+# landscape, turned 180 degrees from this one, is invy here and rotation=1
+# there.
+# Not the overlay's own rotation= parameter: it only tells the kernel, which
+# Cog does not ask.
+#
+# 7"
+dtoverlay=vc4-kms-dsi-ili9881-7inch,invx,swapxy
+# 5"
+#dtoverlay=vc4-kms-dsi-ili9881-5inch,invx,swapxy

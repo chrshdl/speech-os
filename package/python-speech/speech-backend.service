@@ -1,0 +1,42 @@
+[Unit]
+Description=Speech recognition service
+Documentation=https://github.com/chrshdl/speech/blob/master/docs/backend-api.md
+# The acoustic model, the LM and the arguments naming them live on the
+# persistent /data partition (post-image.sh puts them there), so they can be
+# swapped on a device without a new image.
+Requires=data.mount
+After=data.mount network.target sound.target
+# Reads the model and the LM into the page cache while this imports Python.
+# Wants= and no After=: it runs alongside, and a failure costs only time.
+Wants=speech-preload.service
+
+[Service]
+Type=simple
+User=speech
+Group=speech
+# audio: the microphone; netdev: wpa_supplicant's socket; video: the backlight;
+# input: the speakerphone's volume keys.
+SupplementaryGroups=audio netdev video input
+
+# SPEECH_ARGS: the model, the LM and any other backend.py options, see
+# `python3 /usr/lib/speech/backend.py -h`.
+EnvironmentFile=/data/etc/speech-backend
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# onnxruntime's wheel reports usage to Microsoft (1DS, mobile.events.data.
+# microsoft.com) and keeps a device id unless this is set; it then never
+# starts the uploader at all.
+Environment=ORT_DISABLE_TELEMETRY=1
+WorkingDirectory=/usr/lib/speech
+# Unbraced, so systemd splits it into separate arguments.
+ExecStart=/usr/bin/python3 /usr/lib/speech/backend.py $SPEECH_ARGS
+
+# always, not on-failure: when the app's startup fails, uvicorn exits with
+# status 0, and the kiosk would wait for a backend that never comes back.
+# A missing microphone no longer fails it: the backend runs without one, and
+# notices the USB speakerphone plugged in (Audio.MicrophoneChanged).
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,52 @@
+[Unit]
+Description=Speech client on the touch display
+# Wants=, not Requires=: a failed backend start must not discard the kiosk's
+# start job; the first page waits for the backend (see ExecStart).
+Wants=speech-backend.service
+# The splash shows until Cog takes the panel over. Wants=, not Requires=,
+# for the same reason: a decorative splash must never gate the client.
+Wants=splashscreen.service
+After=speech-backend.service goodix-rebind.service prepare-data-dirs.service splashscreen.service
+Requires=data.mount
+After=data.mount
+
+[Service]
+Type=simple
+
+# WebKit keeps the client's local storage (its day/night theme) and its
+# caches in the XDG directories, and Mesa its shader cache: all on /data,
+# since the rootfs is read-only.
+Environment=XDG_DATA_HOME=/data/kiosk/data
+Environment=XDG_CACHE_HOME=/data/kiosk/cache
+Environment=MESA_SHADER_CACHE_DIR=/data/cache/mesa
+Environment=MESA_SHADER_CACHE_MAX_SIZE=64M
+Environment=XDG_RUNTIME_DIR=/run/speech-kiosk
+RuntimeDirectory=speech-kiosk
+RuntimeDirectoryMode=0700
+
+# DRM platform: Cog drives the panel through KMS itself, no compositor. It
+# picks the first DRM device with something connected (cog/0004): the
+# panel's, vc4 on a Pi 4, RP1's DSI on a Pi 5. libinput gives it the touch. The gles renderer turns
+# the portrait panel's picture to landscape: rotation=3 is 90 degrees
+# clockwise. The touch is turned by the panel's dtoverlay in
+# config.txt, see there; the two must match. --autoplay-policy=allow
+# (cog/0003) lets the page play sound before a tap, so a wake word's chime
+# and spoken answer are heard after a boot, without touching the screen.
+# --bg-color=black: until the first page paints, WebKit shows the view's
+# background, white by default, which flashed between the splash, a unicorn
+# on black, and the page.
+#
+# The first page is starting.html, the splash again, which goes to the
+# client once the backend answers: backend.py loads its models before it
+# listens, and the client opened earlier would show an error page that
+# never reloads. Cog thus starts while the backend loads, rather than after
+# (the client showed ~0.6 s sooner, and no black view between the splash and
+# the client). It needs shared-mime-info: without its database GIO knows no
+# file's type, and WebKit renders no file:// page.
+ExecStart=/usr/bin/cog --platform=drm --platform-params=renderer=gles,rotation=3 --webprocess-failure=restart --autoplay-policy=allow --bg-color=black file:///usr/share/speech-kiosk/starting.html
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

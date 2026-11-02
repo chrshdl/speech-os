@@ -1,0 +1,25 @@
+# Release/production hardening. Merged on top of the board defconfig by CI on
+# v* tag builds (append to output/.config + `make olddefconfig`; last
+# assignment wins). Dev builds — local, PR, workflow_dispatch — never get
+# this. CI verifies the merge before building and re-verifies the built
+# rootfs via scripts/assert-release-image.sh.
+#
+# Not everything release-only is expressible as Kconfig: the board post-build
+# and post-image scripts detect this variant (OpenSSH absent from BR2_CONFIG)
+# and additionally mask the getty templates, drop the serial console from
+# cmdline.txt, set enable_uart=0, and regenerate the U-Boot env with
+# bootdelay=-2 + stdin=nulldev (non-interruptible autoboot; nulldev is a real
+# registered device whose tstc() always returns 0 — naming a device that does
+# not exist makes U-Boot fall back to serial).
+# assert-release-image.sh checks all of it when given the images dir.
+
+# No remote shell in shipped images.
+# BR2_PACKAGE_OPENSSH is not set
+
+# Lock the root account (shadow entry "root:*:", no interactive login).
+# Disabling this also drops BR2_TARGET_GENERIC_ROOT_PASSWD (depends on it).
+# BR2_TARGET_ENABLE_ROOT_LOGIN is not set
+
+# Drop BusyBox's wget applet: a sealed appliance has no use for a generic
+# download primitive. Dev images keep it for bench work.
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_SPEECH_OS_PATH)/board/raspberrypi/busybox-no-wget.fragment"

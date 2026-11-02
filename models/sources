@@ -1,0 +1,13 @@
+# The models CI builds the image with, one per line: <sha256> <url> [path],
+# saved as models/<path>, by default the url's file name. See README.md.
+# The acoustic model, the LM and the wake word model, trained with speech,
+# are assets of this repository's models-2026-11-02 release; backend-args
+# holds the decoding settings tuned for this model and LM.
+e4c048198be7fae7af210181612402951835dc0e8992cf2efd71a302e27367e6 https://github.com/chrshdl/speech-os/releases/download/models-2026-11-02/stride3-epoch4-int8.onnx
+6dad2b22ed094613d291c12a0dcfa52b656ddf5b451cbe40cbbcae20f5ba3f1a https://github.com/chrshdl/speech-os/releases/download/models-2026-11-02/lm-mix-clean.npz
+a23a0822e3c3ced27f9fedc7958903ad234528e6bc736ecf1b76549687181a34 https://github.com/chrshdl/speech-os/releases/download/models-2026-11-02/olivia.onnx wake-word/olivia.onnx
+# The voice, en_US-kristin-medium, at a commit of rhasspy/piper-voices.
+5849957f929cbf720c258f8458692d6103fff2f0e3d3b19c8259474bb06a18d4 https://huggingface.co/rhasspy/piper-voices/resolve/5041a7a49ae5b3a0f30e6837769eb03fdbb231bd/en/en_US/kristin/medium/en_US-kristin-medium.onnx voice/en_US-kristin-medium.onnx
+5681426d4aead22195de70531eeeeddb46493cfaffc5764b2ea3db73428b651c https://huggingface.co/rhasspy/piper-voices/resolve/5041a7a49ae5b3a0f30e6837769eb03fdbb231bd/en/en_US/kristin/medium/en_US-kristin-medium.onnx.json voice/en_US-kristin-medium.onnx.json
+# The voice activity detector in front of the wake word, Silero VAD 5.1.2.
+2623a2953f6ff3d2c1e61740c6cdb7168133479b267dfef114a4a3cc5bdd788f https://github.com/snakers4/silero-vad/raw/v5.1.2/src/silero_vad/data/silero_vad.onnx vad/silero_vad.onnx

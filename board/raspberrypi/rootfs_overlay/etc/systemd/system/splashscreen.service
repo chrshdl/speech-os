@@ -1,0 +1,36 @@
+[Unit]
+Description=Show Splash Screen
+DefaultDependencies=no
+# Started by udev the moment fb0 appears (99-splash.rules, ~4.6s). Not
+# ordered after local-fs.target: fbv and splash.png live on the rootfs, and
+# waiting for /boot and /data, which replay dirty journals after a power cut,
+# would keep the screen black for longer. The splash stays until Cog takes
+# over the panel, on the same unicorn (speech-kiosk.service's starting.html)
+# until the backend has loaded its models.
+After=systemd-udevd.service
+
+[Service]
+Type=oneshot
+# The unit is also pulled in early via multi-user.target.wants and the
+# kiosk's Wants=, which can race the fb0 udev event: poll for up to 8s before
+# drawing. "$$" is systemd escaping for a literal "$" handed to the shell.
+#
+# The unblank is ";" and not "&&": it is cosmetic, and fb0/blank can exist
+# but reject the write while the DSI panel is still settling (the probe race
+# goodix-rebind.service works around). Draw the splash even if it fails.
+#
+# fb0 is the panel's native portrait (720x1280) and fbv cannot rotate, so
+# splash.png is turned 90 degrees clockwise, as Cog's rotation=3 turns the
+# client (speech-kiosk.service): upright as the device is mounted. fbv
+# centers it on black.
+#
+# ExecStart=- and TimeoutStartSec: this unit can never fail, nor stall the
+# boot on the 90s default while the kiosk waits on its ordering.
+ExecStart=-/bin/sh -c "n=0; while [ ! -e /sys/class/graphics/fb0/blank ] && [ $$n -lt 80 ]; do sleep 0.1; n=$$((n+1)); done; echo 0 > /sys/class/graphics/fb0/blank; exec /usr/bin/fbv -i -f /usr/share/speech-kiosk/splash.png"
+TimeoutStartSec=15
+StandardInput=null
+StandardOutput=null
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

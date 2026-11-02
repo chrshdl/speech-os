@@ -1,0 +1,6 @@
+# Give the first USB audio device, such as a USB speakerphone, the ALSA card
+# id "usbaudio", which /etc/asound.conf makes the default device. The card
+# number depends on probe order and on the HDMI audio cards, the id does not.
+# The kernel refuses an id another card already has, so a second USB device
+# keeps its own name.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", SUBSYSTEMS=="usb", ATTR{id}="usbaudio"

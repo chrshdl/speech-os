@@ -1,0 +1,5 @@
+# From https://pypi.org/project/onnxruntime/1.31.0/#files
+sha256  984c0a2c1ad6a41fbc101dc3949abe4a72254892d01a5e70d9b792711e0bfa54  onnxruntime-1.31.0-cp314-cp314-manylinux_2_28_aarch64.whl
+# Locally computed
+sha256  2f07c72751aed99790b8a4869cf2311df85a860b22ded05fa22803587a48922c  onnxruntime/LICENSE
+sha256  143764b952fdb1a7c69ce653bfba74a7744d6a8a573bfb73e235fba356c83de3  onnxruntime/ThirdPartyNotices.txt

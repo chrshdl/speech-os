@@ -1,0 +1,4 @@
+# The display's backlight, which speech-backend sets when the user asks for a
+# brightness (backend.py --backlight), as the unprivileged speech user, in
+# the video group. sysfs gives its brightness to root only.
+ACTION=="add", SUBSYSTEM=="backlight", RUN+="/bin/chgrp video /sys%p/brightness", RUN+="/bin/chmod g+w /sys%p/brightness"

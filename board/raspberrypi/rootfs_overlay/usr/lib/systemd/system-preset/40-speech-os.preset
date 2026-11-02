@@ -1,0 +1,5 @@
+# Buildroot runs `systemctl preset-all` on the rootfs, and wpa_supplicant's
+# 50-wpa_supplicant.preset disables every wpa_supplicant@ instance, which
+# removes an enable symlink for one from the overlay. The first matching
+# line of all preset files wins, so this one, sorting first, keeps wlan0's.
+enable wpa_supplicant@.service wlan0

@@ -1,0 +1,17 @@
+[Unit]
+Description=Rebind Goodix GT911 touchscreen (boot probe race with DSI panel)
+
+# The touch depends on the DSI panel MCU being up; the script retries until the
+# input device appears. It touches only /sys and /proc, so it needs no mounts.
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=speech-kiosk.service shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/goodix-rebind.sh
+
+[Install]
+WantedBy=multi-user.target

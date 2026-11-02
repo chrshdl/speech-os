@@ -1,0 +1,1 @@
+root=/dev/mmcblk0p2 rootwait console=tty3 console=ttyS0,115200 8250.nr_uarts=1 quiet loglevel=3 vt.global_cursor_default=0 systemd.show_status=0 cpufreq.default_governor=performance

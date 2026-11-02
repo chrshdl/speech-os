@@ -1,0 +1,310 @@
+From: chrshdl <cwasilei@gmail.com>
+Date: Sat, 17 Oct 2026 07:30:00 +0200
+Subject: [PATCH] [GStreamer][WebAudio] Clock the pipeline by the audio sink
+
+The pipeline picks its clock on going to PLAYING, when the sink of the
+live webaudiosrc has no ring buffer yet to provide its clock with, so
+it ran on the system clock, and the sink was slaved to it. An audio
+device's clock drifts from the system clock (a USB speakerphone here
+plays about 110-170 ppm slow), and the sink corrects that by jumping
+tens of milliseconds once the drift is large enough, every few minutes.
+With the source held to the system clock by the clocksync, it could not
+render ahead to fill the sink again: after such a jump every 10 ms
+segment played in part and in part as silence, as noise that faded out
+only as fast as the clocks drifted, for many seconds.
+
+Clock the pipeline by the sink instead, and let the device pace the
+rendering, without the clocksync: silent quanta are rendered as zeros,
+rather than flagged as gaps that the sink drops, so they fill the sink
+like any audio and the source blocks while it is full. That also keeps
+the source from running ahead on gaps, which the clocksync was added
+for (https://bugs.webkit.org/show_bug.cgi?id=296843). And it keeps the
+sink from starting over after each silence: with gaps, the first 100 ms
+or so of each sound after one were lost, so every tone a page played
+after a pause played cut.
+
+Starting, the sink and the appsrc's queue took the first quanta as fast
+as they rendered, until full, and the context's time jumped ahead by
+about 120 ms, past what a page schedules right after resuming the
+context, such as a tone at its currentTime plus 10 ms, which then played
+cut. So the source first fills them with silence it does not render, as
+much as the sink's buffer-time and latency-time, which the destination
+now both sets, and the appsrc's queue hold.
+
+The buffers' timestamps carried on across stops, such as a suspend of the
+context, while each start begins a segment whose running time starts at
+0: after a resume, the clocksync held the first buffer back for as long
+as the source had played before, which grew with each suspend (resume()
+took 1.5, 3, 4.4, 5.8 s), and with the sink clocking the pipeline it
+played that long as silence. So the timestamps start over with each
+start, and the output's position, which the context reports, counts the
+rendered samples on across starts, as before.
+
+The destination did not report its output latency, so the context's
+outputLatency was 0, and a page could not tell when what it rendered is
+heard, such as to open a microphone only after a tone has played. It is
+now how far the source has pushed ahead of the position the sink plays
+at, by the device's clock: with a USB speakerphone on a Raspberry Pi 4,
+218-222 ms, within 1 ms of the latency measured at the device. Right
+after starting it is less, until the device plays: the sink's position
+is 0 until then.
+
+Upstream: not submitted yet
+
+Signed-off-by: chrshdl <cwasilei@gmail.com>
+---
+--- a/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.cpp
++++ b/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.cpp
+@@ -52,6 +52,29 @@
+     });
+ }
+ 
++// The clock of the audio device the sink plays on, from the sink or, for
++// a bin like autoaudiosink once it is READY, the sink inside it.
++static GstClock* audioSinkClock(GstElement* sink)
++{
++    if (GST_IS_AUDIO_BASE_SINK(sink))
++        return GST_AUDIO_BASE_SINK(sink)->provided_clock;
++    if (!GST_IS_BIN(sink))
++        return nullptr;
++
++    GstClock* clock = nullptr;
++    GstIterator* iterator = gst_bin_iterate_recurse(GST_BIN_CAST(sink));
++    GValue item = G_VALUE_INIT;
++    while (!clock && gst_iterator_next(iterator, &item) == GST_ITERATOR_OK) {
++        auto* element = GST_ELEMENT_CAST(g_value_get_object(&item));
++        if (GST_IS_AUDIO_BASE_SINK(element))
++            clock = GST_AUDIO_BASE_SINK(element)->provided_clock;
++        g_value_reset(&item);
++    }
++    g_value_unset(&item);
++    gst_iterator_free(iterator);
++    return clock;
++}
++
+ static unsigned long maximumNumberOfOutputChannels()
+ {
+     initializeAudioDestinationDebugCategory();
+@@ -144,7 +167,8 @@
+     if (nameView.startsWith("autoaudiosink"_s)) {
+         g_signal_connect(audioSink.get(), "child-added", G_CALLBACK(+[](GstChildProxy*, GObject* object, gchar*, gpointer) {
+             if (GST_IS_AUDIO_BASE_SINK(object))
+-                g_object_set(GST_AUDIO_BASE_SINK(object), "buffer-time", static_cast<gint64>(100000), nullptr);
++                g_object_set(GST_AUDIO_BASE_SINK(object), "buffer-time", static_cast<gint64>(GST_TIME_AS_USECONDS(webAudioSinkBufferTime)),
++                    "latency-time", static_cast<gint64>(GST_TIME_AS_USECONDS(webAudioSinkLatencyTime)), nullptr);
+         }), nullptr);
+ 
+         // Autoaudiosink does the real sink detection in the GST_STATE_NULL->READY transition
+@@ -161,13 +185,22 @@
+ 
+     GstElement* audioConvert = makeGStreamerElement("audioconvert"_s);
+     GstElement* audioResample = makeGStreamerElement("audioresample"_s);
+-    auto clockSync = gst_element_factory_make("clocksync", nullptr);
+ 
+-    gst_bin_add_many(GST_BIN_CAST(m_pipeline.get()), m_src.get(), audioConvert, audioResample, clockSync, audioSink.get(), nullptr);
++    gst_bin_add_many(GST_BIN_CAST(m_pipeline.get()), m_src.get(), audioConvert, audioResample, audioSink.get(), nullptr);
+ 
+-    // Link src pads from webkitAudioSrc to clocksync ! audioConvert ! audioResample ! audiosink.
+-    gst_element_link_pads_full(m_src.get(), "src", clockSync, "sink", GST_PAD_LINK_CHECK_NOTHING);
+-    gst_element_link_pads_full(clockSync, "src", audioConvert, "sink", GST_PAD_LINK_CHECK_NOTHING);
++    // The audio device paces the rendering: the source renders silence too,
++    // and blocks while the sink's ring buffer is full. Its clock is the
++    // pipeline's, so nothing is slaved to the system clock. Picked on going
++    // to PLAYING, the pipeline's clock would be the system clock: the source
++    // is live, so the sink has no ring buffer yet to provide its clock with.
++    // The sink then corrects the device's drift from it by jumping tens of
++    // milliseconds at a time, and with the source synchronized to the
++    // system clock by a clocksync, every segment played on in part.
++    if (auto* clock = audioSinkClock(audioSink.get()))
++        gst_pipeline_use_clock(GST_PIPELINE_CAST(m_pipeline.get()), clock);
++
++    // Link src pads from webkitAudioSrc to audioConvert ! audioResample ! audiosink.
++    gst_element_link_pads_full(m_src.get(), "src", audioConvert, "sink", GST_PAD_LINK_CHECK_NOTHING);
+     gst_element_link_pads_full(audioConvert, "src", audioResample, "sink", GST_PAD_LINK_CHECK_NOTHING);
+     gst_element_link_pads_full(audioResample, "src", audioSink.get(), "sink", GST_PAD_LINK_CHECK_NOTHING);
+ }
+@@ -188,6 +221,19 @@
+     return AudioUtilities::renderQuantumSize;
+ }
+ 
++// How long after rendering the device plays the audio: how far the source has
++// pushed ahead of the position the sink plays at, by the device's clock.
++MediaTime AudioDestinationGStreamer::outputLatency() const
++{
++    gint64 position;
++    if (!m_src || !gst_element_query_position(m_pipeline.get(), GST_FORMAT_TIME, &position) || position < 0)
++        return MediaTime::zeroTime();
++    GstClockTime pushed = webkitWebAudioSourceGetPushedTime(WEBKIT_WEB_AUDIO_SRC(m_src.get()));
++    if (pushed <= static_cast<GstClockTime>(position))
++        return MediaTime::zeroTime();
++    return fromGstClockTime(pushed - position);
++}
++
+ bool AudioDestinationGStreamer::handleMessage(GstMessage* message)
+ {
+     switch (GST_MESSAGE_TYPE(message)) {
+--- a/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.h
++++ b/Source/WebCore/platform/audio/gstreamer/AudioDestinationGStreamer.h
+@@ -39,6 +39,7 @@
+ 
+     bool isPlaying() override { return m_isPlaying; }
+     unsigned framesPerBuffer() const final;
++    MediaTime outputLatency() const final;
+ 
+     bool handleMessage(GstMessage*);
+     void notifyIsPlaying(bool);
+--- a/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.cpp
++++ b/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.cpp
+@@ -32,6 +32,7 @@
+ #include <gst/app/gstappsrc.h>
+ #include <gst/audio/audio-info.h>
+ #include <gst/pbutils/missing-plugins.h>
++#include <atomic>
+ #include <wtf/Condition.h>
+ #include <wtf/Lock.h>
+ #include <wtf/Scope.h>
+@@ -76,7 +77,13 @@
+     // src pad of the element, interleaved wav data is pushed to it.
+     GstPad* sourcePad;
+ 
+-    guint64 numberOfSamples;
++    // The samples pushed since starting, prefilled silence included, which
++    // the buffers' timestamps count from the start of each segment. Read by
++    // the destination too, for its latency.
++    std::atomic<guint64> numberOfSamples { 0 };
++    // The samples rendered, across starts, which is the output's position.
++    guint64 numberOfRenderedSamples;
++    bool needsPrefill { false };
+ 
+     GRefPtr<GstBufferPool> pool;
+ 
+@@ -108,6 +115,9 @@
+     PROP_FRAMES
+ };
+ 
++// How many rendered quanta the appsrc queues, at most.
++static constexpr unsigned appSrcQueuedQuanta = 2;
++
+ GST_DEBUG_CATEGORY_STATIC(webkit_web_audio_src_debug);
+ #define GST_CAT_DEFAULT webkit_web_audio_src_debug
+ 
+@@ -308,6 +318,27 @@
+     return buffer;
+ }
+ 
++// Fills the sink and the appsrc's queue with silence before the first quantum
++// renders after starting. They would otherwise take the first quanta as fast as
++// they render, until full, and the context's time would jump ahead by that much,
++// past the start of what was scheduled right after the context resumed, such as
++// a tone at its currentTime, which would then play cut.
++static void webKitWebAudioSrcPrefill(WebKitWebAudioSrc* src)
++{
++    auto* priv = src->priv;
++    guint64 frames = gst_util_uint64_scale_round(webAudioSinkBufferTime + webAudioSinkLatencyTime, priv->sampleRate, GST_SECOND)
++        + appSrcQueuedQuanta * priv->framesToPull;
++    GRefPtr<GstBuffer> buffer = adoptGRef(gst_buffer_new_allocate(nullptr, frames * priv->bus->numberOfChannels() * sizeof(float), nullptr));
++    gst_buffer_memset(buffer.get(), 0, 0, gst_buffer_get_size(buffer.get()));
++    gst_buffer_add_audio_meta(buffer.get(), &priv->info, frames, nullptr);
++    GST_BUFFER_TIMESTAMP(buffer.get()) = gst_util_uint64_scale(priv->numberOfSamples, GST_SECOND, priv->sampleRate);
++    GST_BUFFER_DURATION(buffer.get()) = gst_util_uint64_scale(frames, GST_SECOND, priv->sampleRate);
++    priv->numberOfSamples += frames;
++    GST_DEBUG_OBJECT(src, "Prefilling the sink with %" G_GUINT64_FORMAT " frames of silence", frames);
++    // Failures, such as flushing, show on pushing the rendered quantum next.
++    gst_app_src_push_buffer(GST_APP_SRC(priv->source.get()), buffer.leakRef());
++}
++
+ static void webKitWebAudioSrcRenderAndPushFrames(const GRefPtr<GstElement>& element, GRefPtr<GstBuffer>&& buffer)
+ {
+     auto* src = WEBKIT_WEB_AUDIO_SRC(element.get());
+@@ -329,13 +360,21 @@
+     if (priv->hasRenderedAudibleFrame && !priv->destination->isPlaying())
+         return;
+ 
++    if (priv->needsPrefill) {
++        priv->needsPrefill = false;
++        webKitWebAudioSrcPrefill(src);
++    }
++
+     GstClockTime timestamp = gst_util_uint64_scale(priv->numberOfSamples, GST_SECOND, priv->sampleRate);
+     priv->numberOfSamples += priv->framesToPull;
+     GstClockTime duration = gst_util_uint64_scale(priv->framesToPull, GST_SECOND, priv->sampleRate);
+ 
++    GstClockTime position = gst_util_uint64_scale(priv->numberOfRenderedSamples, GST_SECOND, priv->sampleRate);
++    priv->numberOfRenderedSamples += priv->framesToPull;
++
+     AudioIOPosition outputTimestamp;
+-    outputTimestamp.position = Seconds::fromNanoseconds(timestamp);
+-    auto now = static_cast<double>((g_get_monotonic_time() + GST_TIME_AS_USECONDS(timestamp)) / 1000000.0);
++    outputTimestamp.position = Seconds::fromNanoseconds(position);
++    auto now = static_cast<double>((g_get_monotonic_time() + GST_TIME_AS_USECONDS(position)) / 1000000.0);
+     outputTimestamp.timestamp = MonotonicTime::fromRawSeconds(now);
+ 
+     // FIXME: Add support for local/live audio input.
+@@ -355,8 +394,10 @@
+         if (quirksManager.isEnabled())
+             quirksManager.processWebAudioSilentBuffer(buffer.get());
+         else {
+-            GST_BUFFER_FLAG_SET(buffer.get(), GST_BUFFER_FLAG_GAP);
+-            GST_BUFFER_FLAG_SET(buffer.get(), GST_BUFFER_FLAG_DROPPABLE);
++            // Silence is rendered like any audio, rather than as a gap the
++            // sink drops, so it fills the sink and paces the rendering. The
++            // bus may be silent without its memory cleared.
++            gst_buffer_memset(buffer.get(), 0, 0, gst_buffer_get_size(buffer.get()));
+         }
+     }
+ 
+@@ -416,7 +457,7 @@
+ 
+     switch (transition) {
+     case GST_STATE_CHANGE_NULL_TO_READY:
+-        priv->numberOfSamples = 0;
++        priv->numberOfRenderedSamples = 0;
+         break;
+     case GST_STATE_CHANGE_READY_TO_PAUSED: {
+         priv->pool = adoptGRef(gst_buffer_pool_new());
+@@ -425,6 +466,11 @@
+         gst_buffer_pool_set_config(priv->pool.get(), config);
+         if (!gst_buffer_pool_set_active(priv->pool.get(), TRUE))
+             return GST_STATE_CHANGE_FAILURE;
++        // Each start, such as resuming after a suspend, begins a segment whose
++        // running time starts at 0. Timestamps carried on from before would
++        // hold the first buffer back for as long as the source played before.
++        priv->numberOfSamples = 0;
++        priv->needsPrefill = true;
+         webKitWebAudioSrcRenderIteration(src);
+         break;
+     }
+@@ -470,7 +516,12 @@
+     priv->bus = bus;
+     priv->caps = adoptGRef(getGStreamerAudioCaps(priv->sampleRate, priv->bus->numberOfChannels()));
+     gst_audio_info_from_caps(&priv->info, priv->caps.get());
+-    g_object_set(priv->source.get(), "max-bytes", static_cast<guint64>(2 * priv->bufferSize * priv->bus->numberOfChannels()), "caps", priv->caps.get(), nullptr);
++    g_object_set(priv->source.get(), "max-bytes", static_cast<guint64>(appSrcQueuedQuanta * priv->bufferSize * priv->bus->numberOfChannels()), "caps", priv->caps.get(), nullptr);
++}
++
++GstClockTime webkitWebAudioSourceGetPushedTime(WebKitWebAudioSrc* src)
++{
++    return gst_util_uint64_scale(src->priv->numberOfSamples, GST_SECOND, src->priv->sampleRate);
+ }
+ 
+ void webkitWebAudioSourceSetDispatchToRenderThreadFunction(WebKitWebAudioSrc* src, Function<void(Function<void()>&&)>&& function)
+--- a/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.h
++++ b/Source/WebCore/platform/audio/gstreamer/WebKitWebAudioSourceGStreamer.h
+@@ -29,9 +29,17 @@
+ 
+ typedef struct _WebKitWebAudioSrc WebKitWebAudioSrc;
+ 
++// How much audio the destination's sink buffers, and the segment it writes to
++// the device at a time, its latency-time. The source fills them with silence on
++// starting.
++static constexpr GstClockTime webAudioSinkBufferTime = 100 * GST_MSECOND;
++static constexpr GstClockTime webAudioSinkLatencyTime = 10 * GST_MSECOND;
++
+ GType webkit_web_audio_src_get_type();
+ 
+ void webkitWebAudioSourceSetBus(WebKitWebAudioSrc*, RefPtr<WebCore::AudioBus>);
++// The stream time of the audio pushed since starting, prefilled silence included.
++GstClockTime webkitWebAudioSourceGetPushedTime(WebKitWebAudioSrc*);
+ void webkitWebAudioSourceSetDispatchToRenderThreadFunction(WebKitWebAudioSrc*, Function<void(Function<void()>&&)>&&);
+ 
+ #endif // USE(GSTREAMER)

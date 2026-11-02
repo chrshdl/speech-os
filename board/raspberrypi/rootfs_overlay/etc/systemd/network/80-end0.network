@@ -1,0 +1,14 @@
+[Match]
+# The on-board GENET Ethernet: systemd's predictable naming calls it end0
+# (devicetree alias ethernet0), never eth0.
+Name=end0
+
+# Same as 80-wlan0.network, see there for why.
+[Network]
+DHCP=ipv4
+IPv6AcceptRA=no
+LinkLocalAddressing=no
+MulticastDNS=yes
+
+[DHCPv4]
+ClientIdentifier=mac
