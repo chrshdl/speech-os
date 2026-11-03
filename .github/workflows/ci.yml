@@ -26,6 +26,10 @@ jobs:
         # Releases are for the Pi 5. configs/raspberrypi4-64_defconfig
         # still builds locally; add raspberrypi4-64 here to release it too.
         board: [raspberrypi5]
+    env:
+      # Both cached between runs, see "Restore compiler cache".
+      BR2_DL_DIR: ${{ github.workspace }}/dl
+      BR2_CCACHE_DIR: ${{ github.workspace }}/ccache
     steps:
       - name: Free disk space
         uses: endersonmenezes/free-disk-space@7901478139cff6e9d44df5972fd8ab8fcade4db1 # v3.2.2
@@ -69,14 +73,46 @@ jobs:
           ref: "${{ steps.buildroot.outputs.version }}"
           path: buildroot
 
-      - name: Build for ${{ matrix.board }}
-        env:
-          BR2_DL_DIR: ${{ github.workspace }}/dl
-          # OS release version for /etc/os-release (read by post-build.sh);
-          # only meaningful on tag builds, empty otherwise.
-          SPEECH_OS_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+      # A cold build runs past the 6h cap of a hosted runner, so CI caches
+      # the sources (dl/) and Buildroot's ccache. The build step has its own
+      # timeout, so a run that runs out of time still saves its ccache and
+      # the next one picks up about where it stopped. ccache keys the
+      # compiler by Buildroot's toolchain hash, so it survives the toolchain
+      # being rebuilt from scratch every run. Caches saved on main reach
+      # every branch, PR and tag; release builds only read them.
+      - name: Restore download cache
+        id: dl-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          # Without speech: dev-image.yml puts a tarball of its own there.
+          # The paths are part of the cache's version, so they must match
+          # in every restore and save, in both workflows.
+          path: |
+            dl
+            !dl/python-speech
+          key: dl-${{ steps.buildroot.outputs.version }}-${{ hashFiles('configs/**', 'package/**') }}
+          restore-keys: dl-${{ steps.buildroot.outputs.version }}-
+
+      - name: Restore compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ccache
+          key: ccache-${{ matrix.board }}-${{ steps.buildroot.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ matrix.board }}-${{ steps.buildroot.outputs.version }}-
+            ccache-${{ matrix.board }}-
+
+      - name: Configure for ${{ matrix.board }}
         run: |
           make -C buildroot BR2_EXTERNAL=../ O=../output ${{ matrix.board }}_defconfig
+
+          # CI only, the defconfigs leave ccache off for local builds. 5G
+          # is ccache's default, spelled out as the budget it takes of the
+          # repository's 10 GB of Actions cache.
+          cat >> output/.config <<'EOF'
+          BR2_CCACHE=y
+          BR2_CCACHE_INITIAL_SETUP="--max-size=5G"
+          EOF
 
           # Release variant (v* tags only): merge the hardening fragment
           # (last assignment wins) and verify it took effect BEFORE burning
@@ -86,7 +122,10 @@ jobs:
           # pipeline never trips errexit, making the check decorative.
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             cat configs/release.fragment >> output/.config
-            make -C buildroot O=../output olddefconfig
+          fi
+          make -C buildroot O=../output olddefconfig
+          grep -q '^BR2_CCACHE=y$' output/.config
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             grep -q '^# BR2_PACKAGE_OPENSSH is not set$' output/.config
             if grep -q '^BR2_PACKAGE_OPENSSH=y' output/.config; then
               echo "release fragment did not remove OpenSSH" >&2; exit 1
@@ -99,7 +138,49 @@ jobs:
             fi
           fi
 
-          make -C buildroot O=../output
+          # Builds host-ccache, so the stats below count this run only.
+          make -C buildroot O=../output ccache-options CCACHE_OPTIONS=--zero-stats
+
+      # Separate from the build, so dl/ is saved only once it is complete.
+      - name: Download sources
+        id: source
+        run: make -C buildroot O=../output source
+
+      - name: Save download cache
+        if: always() && steps.source.outcome == 'success' && steps.dl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            dl
+            !dl/python-speech
+          key: ${{ steps.dl-cache.outputs.cache-primary-key }}
+
+      - name: Build for ${{ matrix.board }}
+        id: build
+        # Leaves the job time to save the ccache when the build runs out.
+        timeout-minutes: 300
+        env:
+          # OS release version for /etc/os-release (read by post-build.sh);
+          # only meaningful on tag builds, empty otherwise.
+          SPEECH_OS_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+        run: make -C buildroot O=../output
+
+      - name: Show compiler cache stats
+        if: always() && steps.build.outcome != 'skipped'
+        run: |
+          {
+            echo '### ccache'
+            echo '```'
+            make -s -C buildroot O=../output ccache-stats
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save compiler cache
+        if: always() && steps.build.outcome != 'skipped' && !startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ccache
+          key: ccache-${{ matrix.board }}-${{ steps.buildroot.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       # Belt-and-braces on top of the config guards above: inspect the actual
       # rootfs.ext4 (what genimage stamps into both A/B slots) for sshd and an
@@ -150,8 +231,6 @@ jobs:
       # image. Host tools never leave the build machine, so host-* stays out.
       - name: Collect legal info (license manifest + sources)
         if: startsWith(github.ref, 'refs/tags/')
-        env:
-          BR2_DL_DIR: ${{ github.workspace }}/dl
         run: |
           make -C buildroot O=../output legal-info
           tar -C output/legal-info -czf \

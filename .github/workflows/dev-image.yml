@@ -53,6 +53,11 @@ jobs:
       fail-fast: false
       matrix:
         board: ${{ fromJSON(needs.boards.outputs.list) }}
+    env:
+      # Both cached between runs, shared with ci.yml, see "Restore
+      # compiler cache" there.
+      BR2_DL_DIR: ${{ github.workspace }}/dl
+      BR2_CCACHE_DIR: ${{ github.workspace }}/ccache
     steps:
       - name: Free disk space
         uses: endersonmenezes/free-disk-space@7901478139cff6e9d44df5972fd8ab8fcade4db1 # v3.2.2
@@ -69,6 +74,30 @@ jobs:
 
       - name: Checkout this repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read pinned Buildroot version
+        id: buildroot
+        run: echo "version=$(cat BUILDROOT_VERSION)" >> "$GITHUB_OUTPUT"
+
+      # Keyed like ci.yml's, so before the speech pin is patched below.
+      - name: Restore download cache
+        id: dl-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            dl
+            !dl/python-speech
+          key: dl-${{ steps.buildroot.outputs.version }}-${{ hashFiles('configs/**', 'package/**') }}
+          restore-keys: dl-${{ steps.buildroot.outputs.version }}-
+
+      - name: Restore compiler cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ccache
+          key: ccache-${{ matrix.board }}-${{ steps.buildroot.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-${{ matrix.board }}-${{ steps.buildroot.outputs.version }}-
+            ccache-${{ matrix.board }}-
 
       - name: Checkout speech at ${{ inputs.speech_ref }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,10 +147,6 @@ jobs:
             echo "$sha  $f" | sha256sum -c -
           done < models/sources
 
-      - name: Read pinned Buildroot version
-        id: buildroot
-        run: echo "version=$(cat BUILDROOT_VERSION)" >> "$GITHUB_OUTPUT"
-
       - name: Checkout Buildroot ${{ steps.buildroot.outputs.version }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -130,13 +155,54 @@ jobs:
           path: buildroot
 
       # Always the dev variant: defconfig as-is (SSH + root/root login),
-      # no release fragment, no SPEECH_OS_VERSION.
-      - name: Build for ${{ matrix.board }}
-        env:
-          BR2_DL_DIR: ${{ github.workspace }}/dl
+      # no release fragment, no SPEECH_OS_VERSION. Plus ccache, as in
+      # ci.yml.
+      - name: Configure for ${{ matrix.board }}
         run: |
           make -C buildroot BR2_EXTERNAL=../ O=../output ${{ matrix.board }}_defconfig
-          make -C buildroot O=../output
+          cat >> output/.config <<'EOF'
+          BR2_CCACHE=y
+          BR2_CCACHE_INITIAL_SETUP="--max-size=5G"
+          EOF
+          make -C buildroot O=../output olddefconfig
+          grep -q '^BR2_CCACHE=y$' output/.config
+          make -C buildroot O=../output ccache-options CCACHE_OPTIONS=--zero-stats
+
+      - name: Download sources
+        id: source
+        run: make -C buildroot O=../output source
+
+      - name: Save download cache
+        if: always() && steps.source.outcome == 'success' && steps.dl-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            dl
+            !dl/python-speech
+          key: ${{ steps.dl-cache.outputs.cache-primary-key }}
+
+      - name: Build for ${{ matrix.board }}
+        id: build
+        # Leaves the job time to save the ccache when the build runs out.
+        timeout-minutes: 300
+        run: make -C buildroot O=../output
+
+      - name: Show compiler cache stats
+        if: always() && steps.build.outcome != 'skipped'
+        run: |
+          {
+            echo '### ccache'
+            echo '```'
+            make -s -C buildroot O=../output ccache-stats
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save compiler cache
+        if: always() && steps.build.outcome != 'skipped'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ccache
+          key: ccache-${{ matrix.board }}-${{ steps.buildroot.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Name image
         run: |
