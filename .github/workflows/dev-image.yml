@@ -184,8 +184,12 @@ jobs:
       - name: Build for ${{ matrix.board }}
         id: build
         # Leaves the job time to save the ccache when the build runs out.
+        # timeout(1) stops the whole build first: at the step's own timeout
+        # GitHub left compilers running, which kept writing to the ccache
+        # while it was saved (tar: "file changed as we read it"), and the
+        # save failed.
         timeout-minutes: 300
-        run: make -C buildroot O=../output
+        run: timeout --kill-after=1m 290m make -C buildroot O=../output
 
       - name: Show compiler cache stats
         if: always() && steps.build.outcome != 'skipped'
