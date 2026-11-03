@@ -52,18 +52,36 @@ the board's CPU.
 
 That builds a dev image, with SSH and root login. A release image merges
 `configs/release.fragment`: no SSH server, root locked, no serial console,
-and U-Boot cannot be interrupted. CI builds it for each `v*` tag, checks
-the hardening with `scripts/assert-release-image.sh`, and publishes it
-with its legal info.
+and U-Boot cannot be interrupted. Releases are built on a Linux build host,
+not in CI (a cold build runs past a hosted runner's 6 hour limit), from a
+clean checkout of the tag with exactly the models in `models/sources`:
 
-Two GitHub Actions workflows build images:
+```sh
+V=v0.1.0 O=$(pwd)/output-release
+make -C buildroot BR2_EXTERNAL=$(pwd) O=$O raspberrypi5_defconfig
+cat configs/release.fragment >> $O/.config
+make -C buildroot O=$O olddefconfig
+SPEECH_OS_VERSION=$V make -C buildroot O=$O
+scripts/assert-release-image.sh $O/.config $O/images/rootfs.ext4 $O/images
+gzip -9c $O/images/sdcard.img > factory-$V-raspberrypi5.img.gz
+sha256sum factory-$V-raspberrypi5.img.gz > factory-$V-raspberrypi5.img.gz.sha256
+make -C buildroot O=$O legal-info
+tar -C $O/legal-info -czf legal-info-$V-raspberrypi5.tar.gz \
+  README buildroot.config manifest.csv licenses sources
+```
 
-- `ci.yml`: the release image for each `v*` tag, published with the
-  release, and a dev image of the pinned speech version when started by
-  hand, or for a pull request labeled `build`, as a workflow artifact.
+and attach the three files to the GitHub release of the tag.
+
+Two GitHub Actions workflows build dev images, as workflow artifacts:
+
+- `ci.yml`: a dev image of the pinned speech version, when started by hand
+  or for a pull request labeled `build`.
 - `dev-image.yml`, started by hand: a dev image with any speech branch,
-  tag or commit in place of the pinned one, as a workflow artifact, such as
+  tag or commit in place of the pinned one, such as
   `gh workflow run dev-image.yml -f speech_ref=my-branch`.
+
+In CI a cold build takes two runs: the first runs out of time but saves its
+compiler cache, and the second, mostly cache hits, finishes.
 
 ## On the device
 

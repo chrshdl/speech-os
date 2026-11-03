@@ -1,20 +1,20 @@
 name: CI speech-os
 
+# Dev images only. A release is built on a build host, see README.md: a
+# cold build runs past a hosted runner's 6h cap.
 on:
-  push:
-    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
     # The image build (~3-4h with WPE WebKit) is expensive, so it does NOT run
     # on pull requests by default. Add the "build" label to a PR to opt into an
-    # image build for it. Tags (v*) and workflow_dispatch always build.
+    # image build for it. workflow_dispatch always builds.
     if: >-
       github.event_name != 'pull_request' ||
       contains(github.event.pull_request.labels.*.name, 'build')
@@ -23,8 +23,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Releases are for the Pi 5. configs/raspberrypi4-64_defconfig
-        # still builds locally; add raspberrypi4-64 here to release it too.
+        # configs/raspberrypi4-64_defconfig builds locally, or with
+        # dev-image.yml's board input.
         board: [raspberrypi5]
     env:
       # Both cached between runs, see "Restore compiler cache".
@@ -79,7 +79,7 @@ jobs:
       # the next one picks up about where it stopped. ccache keys the
       # compiler by Buildroot's toolchain hash, so it survives the toolchain
       # being rebuilt from scratch every run. Caches saved on main reach
-      # every branch, PR and tag; release builds only read them.
+      # every branch and PR.
       - name: Restore download cache
         id: dl-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -113,30 +113,8 @@ jobs:
           BR2_CCACHE=y
           BR2_CCACHE_INITIAL_SETUP="--max-size=5G"
           EOF
-
-          # Release variant (v* tags only): merge the hardening fragment
-          # (last assignment wins) and verify it took effect BEFORE burning
-          # a multi-hour build. Dev builds keep the defconfig as-is (SSH +
-          # root/root login). NOTE: these guards must stay as explicit
-          # `if grep; then exit 1; fi` — under `set -e` a `! grep`-style
-          # pipeline never trips errexit, making the check decorative.
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            cat configs/release.fragment >> output/.config
-          fi
           make -C buildroot O=../output olddefconfig
           grep -q '^BR2_CCACHE=y$' output/.config
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            grep -q '^# BR2_PACKAGE_OPENSSH is not set$' output/.config
-            if grep -q '^BR2_PACKAGE_OPENSSH=y' output/.config; then
-              echo "release fragment did not remove OpenSSH" >&2; exit 1
-            fi
-            if grep -q '^BR2_TARGET_ENABLE_ROOT_LOGIN=y' output/.config; then
-              echo "release fragment did not disable root login" >&2; exit 1
-            fi
-            if grep -q '^BR2_TARGET_GENERIC_ROOT_PASSWD=' output/.config; then
-              echo "root password still set in release config" >&2; exit 1
-            fi
-          fi
 
           # Builds host-ccache, so the stats below count this run only.
           make -C buildroot O=../output ccache-options CCACHE_OPTIONS=--zero-stats
@@ -163,10 +141,6 @@ jobs:
         # while it was saved (tar: "file changed as we read it"), and the
         # save failed.
         timeout-minutes: 300
-        env:
-          # OS release version for /etc/os-release (read by post-build.sh);
-          # only meaningful on tag builds, empty otherwise.
-          SPEECH_OS_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
         run: timeout --kill-after=1m 290m make -C buildroot O=../output
 
       - name: Show compiler cache stats
@@ -180,77 +154,22 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Save compiler cache
-        if: always() && steps.build.outcome != 'skipped' && !startsWith(github.ref, 'refs/tags/')
+        if: always() && steps.build.outcome != 'skipped'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ccache
           key: ccache-${{ matrix.board }}-${{ steps.buildroot.outputs.version }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-      # Belt-and-braces on top of the config guards above: inspect the actual
-      # rootfs.ext4 (what genimage stamps into both A/B slots) for sshd and an
-      # unlocked root account. Runs before any rename/upload step, so a failed
-      # assertion means nothing reaches the release.
-      - name: Assert release hardening (no sshd, root locked, no serial/U-Boot access)
-        if: startsWith(github.ref, 'refs/tags/')
-        run: ./scripts/assert-release-image.sh output/.config output/images/rootfs.ext4 output/images
-
       - name: Name image
         run: |
-          REF="${GITHUB_REF_NAME//\//-}"
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            IMG="factory-${REF}-${{ matrix.board }}.img"
-          else
-            IMG="dev-${REF}-${{ matrix.board }}.img"
-          fi
+          IMG="dev-${GITHUB_REF_NAME//\//-}-${{ matrix.board }}.img"
           mv "output/images/sdcard.img" "output/images/${IMG}"
           echo "IMG=${IMG}" >> "$GITHUB_ENV"
 
-      # Tag builds only: the sdcard.img is mostly sparse free space (FAT +
-      # ext4 headroom), so it gzips down substantially. Compresses in place
-      # (no -k — the runner is already disk-constrained). Raspberry Pi Imager
-      # and balenaEtcher both flash .img.gz directly.
-      - name: Compress factory image
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          cd output/images
-          gzip -9 "${IMG}"
-          IMG="${IMG}.gz"
-          sha256sum "${IMG}" > "${IMG}.sha256"
-          echo "IMG=${IMG}" >> "$GITHUB_ENV"
-
       - name: Upload dev image as workflow artifact
-        if: "!startsWith(github.ref, 'refs/tags/')"
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ env.IMG }}
           path: output/images/${{ env.IMG }}
           retention-days: 14
           compression-level: 9
-
-      # The published images aggregate GPL/LGPL components (kernel, U-Boot,
-      # BusyBox, glibc, WebKit, ...) whose licenses require making the
-      # corresponding sources available alongside the binaries. Buildroot's
-      # legal-info collects the per-package license texts, the manifest, and
-      # the source archives; every release ships that bundle next to the
-      # image. Host tools never leave the build machine, so host-* stays out.
-      - name: Collect legal info (license manifest + sources)
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          make -C buildroot O=../output legal-info
-          tar -C output/legal-info -czf \
-            output/images/legal-info-${{ github.ref_name }}-${{ matrix.board }}.tar.gz \
-            README buildroot.config manifest.csv licenses sources
-
-      - name: Upload Factory Image to Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          files: |
-            output/images/${{ env.IMG }}
-            output/images/${{ env.IMG }}.sha256
-
-      - name: Upload Legal Info to Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
-        with:
-          files: output/images/legal-info-${{ github.ref_name }}-${{ matrix.board }}.tar.gz
