@@ -1,0 +1,4 @@
+# Locally computed sha256 checksums, of scipy 1.17.1's ARPACK license files:
+# its C port, arnaud, replaced the Fortran ARPACK. See external.mk.
+sha256  53c82c54b92d94ef8c2ffee82e12135c6c3fdf23c3949d7bf6315282b14d6b8b  scipy/sparse/linalg/_eigen/arpack/arnaud/ARPACK_LICENSE.txt
+sha256  f49da99252dee2c12dbd5c71762b0724063f4531de193fbcece550ad9a3b6354  scipy/sparse/linalg/_eigen/arpack/arnaud/LICENSE
