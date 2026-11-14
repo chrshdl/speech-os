@@ -4,10 +4,14 @@
 #
 ################################################################################
 
-# A commit on master, the merge of PR #44: the backend runs without its
-# microphone, such as the USB speakerphone unplugged at boot, and notices it
-# unplugged and plugged in again, which the client shows on its microphone
-# button. After the merge of PR #43 (Snake, played by voice with "up",
+# A commit on master, the merge of PR #46: the radio plays the TOGGO
+# channel radio.toggo.de's own page plays, such as its Christmas channel,
+# and follows the songs of the channel its stream says it plays, as the main
+# channel went silent. After the merge of PR #45 (the README's use of the
+# app in the browser and its architecture), of PR #44 (the backend runs
+# without its microphone, such as the USB speakerphone unplugged at boot,
+# and notices it unplugged and plugged in again, which the client shows on
+# its microphone button), of PR #43 (Snake, played by voice with "up",
 # "down", "left" and "right", up to 5 levels of walls, commands matched as
 # they are said, and 5 seconds without speech ending a capture by default),
 # of PR #42 (the drums, a kit on the screen that plays recordings of each
@@ -27,7 +31,7 @@
 # changed the bytes of its generated archives before, which broke sha256
 # pins, while Buildroot builds a reproducible archive of the git tree
 # itself.
-PYTHON_SPEECH_VERSION = fb97035b093ee85ea2aa9f6cb6dfe54939e53a69
+PYTHON_SPEECH_VERSION = 02a332f4e68f0b01d2bf23c753596844e7f55da4
 PYTHON_SPEECH_SITE = https://github.com/chrshdl/speech.git
 PYTHON_SPEECH_SITE_METHOD = git
 
